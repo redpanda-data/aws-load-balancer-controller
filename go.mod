@@ -5,9 +5,9 @@ go 1.24.0
 toolchain go1.24.5
 
 require (
-	github.com/aws/aws-sdk-go v1.44.137
-	github.com/gavv/httpexpect/v2 v2.17.0
-	github.com/go-logr/logr v1.4.2
+	github.com/aws/aws-sdk-go v1.44.184
+	github.com/gavv/httpexpect/v2 v2.3.1
+	github.com/go-logr/logr v0.4.0
 	github.com/golang/mock v1.6.0
 	github.com/google/go-cmp v0.7.0
 	github.com/onsi/ginkgo/v2 v2.23.3
