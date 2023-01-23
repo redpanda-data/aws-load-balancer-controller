@@ -122,7 +122,7 @@ func BuildRuntimeOptions(rtCfg RuntimeConfig, scheme *runtime.Scheme) ctrl.Optio
 		},
 		HealthProbeBindAddress:     rtCfg.HealthProbeBindAddress,
 		LeaderElection:             rtCfg.EnableLeaderElection,
-		LeaderElectionResourceLock: resourcelock.LeasesResourceLock,
+		LeaderElectionResourceLock: resourcelock.ConfigMapsLeasesResourceLock,
 		LeaderElectionID:           rtCfg.LeaderElectionID,
 		LeaderElectionNamespace:    rtCfg.LeaderElectionNamespace,
 		// Namespace:                  rtCfg.WatchNamespace,
