@@ -13,6 +13,7 @@ import (
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/aws/services"
 	coremodel "sigs.k8s.io/aws-load-balancer-controller/pkg/model/core"
 	elbv2model "sigs.k8s.io/aws-load-balancer-controller/pkg/model/elbv2"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 func Test_defaultTargetGroupAttributeReconciler_Reconcile(t *testing.T) {
@@ -164,7 +165,7 @@ func Test_defaultTargetGroupAttributeReconciler_Reconcile(t *testing.T) {
 			}
 			r := &defaultTargetGroupAttributeReconciler{
 				elbv2Client: elbv2Client,
-				logger:      logr.Discard(),
+				logger:      logr.New(&log.NullLogSink{}),
 			}
 			err := r.Reconcile(context.Background(), tt.args.resTG, tt.args.sdkTG)
 			if tt.wantErr != nil {

@@ -21,6 +21,7 @@ import (
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/k8s"
 	ctrl "sigs.k8s.io/controller-runtime"
 	testclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
@@ -1325,7 +1326,7 @@ func Test_defaultEndpointResolver_ResolvePodEndpoints(t *testing.T) {
 				podInfoRepo:          podInfoRepo,
 				failOpenEnabled:      tt.fields.failOpenEnabled,
 				endpointSliceEnabled: tt.fields.endpointSliceEnabled,
-				logger:               logr.Discard(),
+				logger:               logr.New(&log.NullLogSink{}),
 			}
 			got, gotContainsPotentialReadyEndpoints, err := r.ResolvePodEndpoints(ctx, tt.args.svcKey, tt.args.port, tt.args.opts...)
 			if tt.wantErr != nil {

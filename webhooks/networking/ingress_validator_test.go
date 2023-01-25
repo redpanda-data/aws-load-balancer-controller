@@ -17,6 +17,7 @@ import (
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/annotations"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/ingress"
 	testclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 func Test_ingressValidator_checkIngressClassAnnotationUsage(t *testing.T) {
@@ -245,7 +246,7 @@ func Test_ingressValidator_checkIngressClassAnnotationUsage(t *testing.T) {
 				annotationParser:              annotationParser,
 				classAnnotationMatcher:        classAnnotationMatcher,
 				disableIngressClassAnnotation: tt.fields.disableIngressClassAnnotation,
-				logger:                        logr.Discard(),
+				logger:                        logr.New(&log.NullLogSink{}),
 			}
 			err := v.checkIngressClassAnnotationUsage(tt.args.ing, tt.args.oldIng)
 			if tt.wantErr != nil {
@@ -459,7 +460,7 @@ func Test_ingressValidator_checkGroupNameAnnotationUsage(t *testing.T) {
 				annotationParser:              annotationParser,
 				classAnnotationMatcher:        classAnnotationMatcher,
 				disableIngressGroupAnnotation: tt.fields.disableIngressGroupAnnotation,
-				logger:                        logr.Discard(),
+				logger:                        logr.New(&log.NullLogSink{}),
 			}
 			err := v.checkGroupNameAnnotationUsage(tt.args.ing, tt.args.oldIng)
 			if tt.wantErr != nil {

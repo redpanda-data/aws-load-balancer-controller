@@ -14,6 +14,7 @@ import (
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/aws/services"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/deploy/tracking"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/networking"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 func Test_defaultTaggingManager_ReconcileTags(t *testing.T) {
@@ -164,7 +165,7 @@ func Test_defaultTaggingManager_ReconcileTags(t *testing.T) {
 
 			m := &defaultTaggingManager{
 				ec2Client: ec2Client,
-				logger:    logr.Discard(),
+				logger:    logr.New(&log.NullLogSink{}),
 			}
 			err := m.ReconcileTags(context.Background(), tt.args.resID, tt.args.desiredTags, tt.args.opts...)
 			if tt.wantErr != nil {

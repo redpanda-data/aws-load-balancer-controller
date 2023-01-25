@@ -4141,7 +4141,7 @@ func Test_defaultModelBuilder_Build(t *testing.T) {
 			annotationParser := annotations.NewSuffixAnnotationParser("alb.ingress.kubernetes.io")
 			authConfigBuilder := NewDefaultAuthConfigBuilder(annotationParser)
 			enhancedBackendBuilder := NewDefaultEnhancedBackendBuilder(k8sClient, annotationParser, authConfigBuilder)
-			ruleOptimizer := NewDefaultRuleOptimizer(logr.Discard())
+			ruleOptimizer := NewDefaultRuleOptimizer(logr.New(&log.NullLogSink{}))
 			trackingProvider := tracking.NewDefaultProvider("ingress.k8s.aws", clusterName)
 			stackMarshaller := deploy.NewDefaultStackMarshaller()
 			backendSGProvider := networkingpkg.NewMockBackendSGProvider(ctrl)
@@ -4175,7 +4175,7 @@ func Test_defaultModelBuilder_Build(t *testing.T) {
 				elbv2TaggingManager:    elbv2TaggingManager,
 				enableBackendSG:        tt.fields.enableBackendSG,
 				featureGates:           config.NewFeatureGates(),
-				logger:                 logr.Discard(),
+				logger:                 logr.New(&log.NullLogSink{}),
 
 				defaultSSLPolicy:  "ELBSecurityPolicy-2016-08",
 				defaultTargetType: elbv2model.TargetType(defaultTargetType),

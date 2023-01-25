@@ -4,8 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-
 	"github.com/go-logr/logr"
 	"github.com/golang/mock/gomock"
 	"github.com/google/go-cmp/cmp"

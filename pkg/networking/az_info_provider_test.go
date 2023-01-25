@@ -11,6 +11,7 @@ import (
 	"github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/aws/services"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 func Test_defaultAZInfoProvider_FetchAZInfos(t *testing.T) {
@@ -206,7 +207,7 @@ func Test_defaultAZInfoProvider_FetchAZInfos(t *testing.T) {
 				ec2Client.EXPECT().DescribeAvailabilityZonesWithContext(gomock.Any(), call.input).Return(call.output, call.err)
 			}
 
-			p := NewDefaultAZInfoProvider(ec2Client, logr.Discard())
+			p := NewDefaultAZInfoProvider(ec2Client, logr.New(&log.NullLogSink{}))
 
 			for _, call := range tt.fetchAZInfoCalls {
 				got, err := p.FetchAZInfos(context.Background(), call.args.availabilityZoneIDs)

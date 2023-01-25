@@ -377,7 +377,7 @@ func Test_defaultResourceManager_updateTargetHealthPodConditionForPod(t *testing
 
 			m := &defaultResourceManager{
 				k8sClient: k8sClient,
-				logger:    logr.Discard(),
+				logger:    logr.New(&log.NullLogSink{}),
 			}
 
 			ctx := context.Background()

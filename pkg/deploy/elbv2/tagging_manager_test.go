@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/aws/services"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/deploy/tracking"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 func Test_defaultTaggingManager_ReconcileTags(t *testing.T) {
@@ -228,7 +229,7 @@ func Test_defaultTaggingManager_ReconcileTags(t *testing.T) {
 			m := &defaultTaggingManager{
 				elbv2Client:           elbv2Client,
 				vpcID:                 "vpc-xxxxxxx",
-				logger:                logr.Discard(),
+				logger:                logr.New(&log.NullLogSink{}),
 				describeTagsChunkSize: defaultDescribeTagsChunkSize,
 			}
 			err := m.ReconcileTags(context.Background(), tt.args.arn, tt.args.desiredTags, tt.args.opts...)

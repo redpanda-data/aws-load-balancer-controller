@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"k8s.io/apimachinery/pkg/util/cache"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/aws/services"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 func Test_defaultProtectionManager_IsSubscribed(t *testing.T) {
@@ -152,7 +153,7 @@ func Test_defaultProtectionManager_IsSubscribed(t *testing.T) {
 
 			m := &defaultProtectionManager{
 				shieldClient:              shieldClient,
-				logger:                    logr.Discard(),
+				logger:                    logr.New(&log.NullLogSink{}),
 				subscriptionStateCache:    cache.NewExpiring(),
 				subscriptionStateCacheTTL: tt.fields.subscriptionStateCacheTTL,
 			}

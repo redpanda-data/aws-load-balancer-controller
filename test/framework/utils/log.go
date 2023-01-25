@@ -20,12 +20,12 @@ type GinkgoLogger interface {
 var _ GinkgoLogger = &defaultGinkgoLogger{}
 
 type defaultGinkgoLogger struct {
-	logr.Logger
+	logger logr.Logger
 }
 
 func (l *defaultGinkgoLogger) Logf(format string, args ...interface{}) {
 	message := fmt.Sprintf(format, args...)
-	l.Logger.Info(message)
+	l.logger.Info(message)
 }
 
 func (l *defaultGinkgoLogger) Errorf(format string, args ...interface{}) {
@@ -42,12 +42,12 @@ func (l *defaultGinkgoLogger) Info(msg string, keyvalue ...any) {
 }
 
 // NewGinkgoLogger returns new logger with ginkgo backend.
-func NewGinkgoLogger() GinkgoLogger {
+func NewGinkgoLogger() (logr.Logger, httpexpectv2.LoggerReporter) {
 	encoder := zapcore.NewJSONEncoder(zapraw.NewProductionEncoderConfig())
 
 	logger := zap.New(zap.UseDevMode(false),
 		zap.Level(zapraw.InfoLevel),
 		zap.WriteTo(ginkgov2.GinkgoWriter),
 		zap.Encoder(encoder))
-	return &defaultGinkgoLogger{Logger: logger}
+	return logger, &defaultGinkgoLogger{logger: logger}
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	elbv2api "sigs.k8s.io/aws-load-balancer-controller/apis/elbv2/v1beta1"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/aws/services"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 func Test_targetGroupBindingMutator_MutateCreate(t *testing.T) {
@@ -188,7 +189,7 @@ func Test_targetGroupBindingMutator_MutateCreate(t *testing.T) {
 
 			m := &targetGroupBindingMutator{
 				elbv2Client: elbv2Client,
-				logger:      logr.Discard(),
+				logger:      logr.New(&log.NullLogSink{}),
 			}
 			got, err := m.MutateCreate(context.Background(), tt.args.obj)
 			if tt.wantErr != nil {
@@ -292,7 +293,7 @@ func Test_targetGroupBindingMutator_obtainSDKTargetTypeFromAWS(t *testing.T) {
 
 			m := &targetGroupBindingMutator{
 				elbv2Client: elbv2Client,
-				logger:      logr.Discard(),
+				logger:      logr.New(&log.NullLogSink{}),
 			}
 			got, err := m.obtainSDKTargetTypeFromAWS(context.Background(), tt.args.tgARN)
 			if tt.wantErr != nil {
@@ -419,7 +420,7 @@ func Test_targetGroupBindingMutator_getIPAddressTypeFromAWS(t *testing.T) {
 
 			m := &targetGroupBindingMutator{
 				elbv2Client: elbv2Client,
-				logger:      logr.Discard(),
+				logger:      logr.New(&log.NullLogSink{}),
 			}
 			got, err := m.getTargetGroupIPAddressTypeFromAWS(context.Background(), tt.args.tgARN)
 			if tt.wantErr != nil {

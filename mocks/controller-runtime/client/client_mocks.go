@@ -624,10 +624,10 @@ func (mr *MockClientMockRecorder) DeleteAllOf(ctx, obj interface{}, opts ...inte
 }
 
 // Get mocks base method.
-func (m *MockClient) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+func (m *MockClient) Get(arg0 context.Context, arg1 types.NamespacedName, arg2 client.Object, arg3 ...client.GetOption) error {
 	m.ctrl.T.Helper()
-	varargs := []interface{}{ctx, key, obj}
-	for _, a := range opts {
+	varargs := []interface{}{arg0, arg1, arg2}
+	for _, a := range arg3 {
 		varargs = append(varargs, a)
 	}
 	ret := m.ctrl.Call(m, "Get", varargs...)
@@ -636,40 +636,10 @@ func (m *MockClient) Get(ctx context.Context, key client.ObjectKey, obj client.O
 }
 
 // Get indicates an expected call of Get.
-func (mr *MockClientMockRecorder) Get(ctx, key, obj interface{}, opts ...interface{}) *gomock.Call {
+func (mr *MockClientMockRecorder) Get(arg0, arg1, arg2 interface{}, arg3 ...interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	varargs := append([]interface{}{ctx, key, obj}, opts...)
+	varargs := append([]interface{}{arg0, arg1, arg2}, arg3...)
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Get", reflect.TypeOf((*MockClient)(nil).Get), varargs...)
-}
-
-// GroupVersionKindFor mocks base method.
-func (m *MockClient) GroupVersionKindFor(obj runtime.Object) (schema.GroupVersionKind, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GroupVersionKindFor", obj)
-	ret0, _ := ret[0].(schema.GroupVersionKind)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// GroupVersionKindFor indicates an expected call of GroupVersionKindFor.
-func (mr *MockClientMockRecorder) GroupVersionKindFor(obj interface{}) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GroupVersionKindFor", reflect.TypeOf((*MockClient)(nil).GroupVersionKindFor), obj)
-}
-
-// IsObjectNamespaced mocks base method.
-func (m *MockClient) IsObjectNamespaced(obj runtime.Object) (bool, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "IsObjectNamespaced", obj)
-	ret0, _ := ret[0].(bool)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// IsObjectNamespaced indicates an expected call of IsObjectNamespaced.
-func (mr *MockClientMockRecorder) IsObjectNamespaced(obj interface{}) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IsObjectNamespaced", reflect.TypeOf((*MockClient)(nil).IsObjectNamespaced), obj)
 }
 
 // List mocks base method.
@@ -753,7 +723,21 @@ func (mr *MockClientMockRecorder) Status() *gomock.Call {
 }
 
 // SubResource mocks base method.
-func (m *MockClient) SubResource(subResource string) client.SubResourceClient {
+func (m *MockClient) SubResource(arg0 string) client.SubResourceClient {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "SubResource", arg0)
+	ret0, _ := ret[0].(client.SubResourceClient)
+	return ret0
+}
+
+// SubResource indicates an expected call of SubResource.
+func (mr *MockClientMockRecorder) SubResource(arg0 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SubResource", reflect.TypeOf((*MockClient)(nil).SubResource), arg0)
+}
+
+// Update mocks base method.
+func (m *MockClient) Update(arg0 context.Context, arg1 client.Object, arg2 ...client.UpdateOption) error {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "SubResource", subResource)
 	ret0, _ := ret[0].(client.SubResourceClient)

@@ -354,7 +354,7 @@ func Test_PodReadinessGate_Mutate(t *testing.T) {
 			ctx = webhook.ContextWithAdmissionRequest(ctx, admission.Request{
 				AdmissionRequest: admissionv1.AdmissionRequest{Namespace: tt.namespace},
 			})
-			readinessGateInjector := NewPodReadinessGate(tt.config, k8sClient, logr.Discard())
+			readinessGateInjector := NewPodReadinessGate(tt.config, k8sClient, logr.New(&log.NullLogSink{}))
 			err := readinessGateInjector.Mutate(ctx, tt.pod)
 			if tt.wantError {
 				assert.Error(t, err)

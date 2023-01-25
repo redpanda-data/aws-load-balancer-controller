@@ -13,6 +13,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 func Test_defaultNodeENIInfoResolver_Resolve(t *testing.T) {
@@ -335,7 +336,7 @@ func Test_defaultNodeENIInfoResolver_Resolve(t *testing.T) {
 			for _, call := range tt.fields.fetchNodeInstancesCalls {
 				nodeInfoProvider.EXPECT().FetchNodeInstances(gomock.Any(), call.nodes).Return(call.nodeInstanceByNodeKey, call.err)
 			}
-			r := NewDefaultNodeENIInfoResolver(nodeInfoProvider, logr.Discard())
+			r := NewDefaultNodeENIInfoResolver(nodeInfoProvider, logr.New(&log.NullLogSink{}))
 			for _, call := range tt.wantResolveCalls {
 				got, err := r.Resolve(context.Background(), call.args.nodes)
 				if call.wantErr != nil {
@@ -526,7 +527,7 @@ func Test_defaultNodeENIInfoResolver_resolveViaInstanceID(t *testing.T) {
 			}
 			r := &defaultNodeENIInfoResolver{
 				nodeInfoProvider: nodeInfoProvider,
-				logger:           logr.Discard(),
+				logger:           logr.New(&log.NullLogSink{}),
 			}
 			got, err := r.resolveViaInstanceID(context.Background(), tt.args.nodes)
 			if tt.wantErr != nil {
