@@ -38,7 +38,57 @@ func Test_defaultClassLoader_Load(t *testing.T) {
 		wantErr error
 	}{
 		{
-			name: "when IngressClassName unspecified",
+			name: "when IngressClassName unspecified - Default class specified",
+			env: env{
+				nsList: []*corev1.Namespace{
+					{
+						ObjectMeta: metav1.ObjectMeta{
+							Name: "awesome-ns",
+						},
+					},
+				},
+				ingClassList: []*networking.IngressClass{
+					{
+						ObjectMeta: metav1.ObjectMeta{
+							Name: "awesome-ingress-class",
+							Annotations: map[string]string{
+								"ingressclass.kubernetes.io/is-default-class": "true",
+							},
+						},
+						Spec: networking.IngressClassSpec{
+							Controller: "awesome-ingress-controller",
+						},
+					},
+				},
+			},
+			args: args{
+				ing: &networking.Ingress{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: "awesome-ns",
+						Name:      "awesome-ing",
+					},
+					Spec: networking.IngressSpec{
+						IngressClassName: nil,
+					},
+				},
+			},
+			want: ClassConfiguration{
+				IngClass: &networking.IngressClass{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "awesome-ingress-class",
+						Annotations: map[string]string{
+							"ingressclass.kubernetes.io/is-default-class": "true",
+						},
+					},
+					Spec: networking.IngressClassSpec{
+						Controller: "awesome-ingress-controller",
+					},
+				},
+			},
+			wantErr: nil,
+		},
+		{
+			name: "when IngressClassName unspecified - Default class unspecified",
 			env: env{
 				nsList: []*corev1.Namespace{
 					{
@@ -59,7 +109,116 @@ func Test_defaultClassLoader_Load(t *testing.T) {
 					},
 				},
 			},
-			wantErr: errors.New("invalid ingress class: spec.ingressClassName is nil"),
+			want: ClassConfiguration{},
+		},
+		{
+			name: "when IngressClassName unspecified - Multiple default classes specified",
+			env: env{
+				nsList: []*corev1.Namespace{
+					{
+						ObjectMeta: metav1.ObjectMeta{
+							Name: "awesome-ns",
+						},
+					},
+				},
+				ingClassList: []*networking.IngressClass{
+					{
+						ObjectMeta: metav1.ObjectMeta{
+							Name: "awesome-ingress-class-1",
+							Annotations: map[string]string{
+								"ingressclass.kubernetes.io/is-default-class": "true",
+							},
+						},
+						Spec: networking.IngressClassSpec{
+							Controller: "awesome-ingress-controller-1",
+						},
+					},
+					{
+						ObjectMeta: metav1.ObjectMeta{
+							Name: "awesome-ingress-class-2",
+							Annotations: map[string]string{
+								"ingressclass.kubernetes.io/is-default-class": "true",
+							},
+						},
+						Spec: networking.IngressClassSpec{
+							Controller: "awesome-ingress-controller-2",
+						},
+					},
+				},
+			},
+			args: args{
+				ing: &networking.Ingress{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: "awesome-ns",
+						Name:      "awesome-ing",
+					},
+					Spec: networking.IngressSpec{
+						IngressClassName: nil,
+					},
+				},
+			},
+			wantErr: errors.New("multiple default IngressClasses found"),
+		},
+		{
+			name: "when IngressClass is ALB - Multiple default classes specified",
+			env: env{
+				nsList: []*corev1.Namespace{
+					{
+						ObjectMeta: metav1.ObjectMeta{
+							Name: "awesome-ns",
+						},
+					},
+				},
+				ingClassList: []*networking.IngressClass{
+					{
+						ObjectMeta: metav1.ObjectMeta{
+							Name: "awesome-ingress-class-1",
+							Annotations: map[string]string{
+								"ingressclass.kubernetes.io/is-default-class": "true",
+							},
+						},
+						Spec: networking.IngressClassSpec{
+							Controller: "ingress.k8s.aws/alb",
+						},
+					},
+					{
+						ObjectMeta: metav1.ObjectMeta{
+							Name: "awesome-ingress-class-2",
+							Annotations: map[string]string{
+								"ingressclass.kubernetes.io/is-default-class": "true",
+							},
+						},
+						Spec: networking.IngressClassSpec{
+							Controller: "awesome-ingress-controller-2",
+						},
+					},
+				},
+			},
+			args: args{
+				ing: &networking.Ingress{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: "awesome-ns",
+						Name:      "awesome-ing",
+					},
+					Spec: networking.IngressSpec{
+						IngressClassName: aws.String("awesome-ingress-class-1"),
+					},
+				},
+			},
+			want: ClassConfiguration{
+				IngClass: &networking.IngressClass{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "awesome-ingress-class-1",
+						Annotations: map[string]string{
+							"ingressclass.kubernetes.io/is-default-class": "true",
+						},
+					},
+					Spec: networking.IngressClassSpec{
+						Controller: "ingress.k8s.aws/alb",
+					},
+				},
+			},
+			wantErr: nil,
 		},
 		{
 			name: "when IngressClass not found",
