@@ -284,6 +284,11 @@ defaultTags: {}
   # default_tag1: value1
   # default_tag2: value2
 
+# endpointSGTags are the tags that will be used by the controller to find the worker node security group to add inbound rules from NLBs.
+endpointSGTags: {}
+  # default_tag1: value1
+  # default_tag2: value2
+
 # podDisruptionBudget specifies the disruption budget for the controller pods.
 # Disruption budget will be configured only when the replicaCount is greater than 1
 podDisruptionBudget: {}
@@ -350,5 +355,5 @@ clusterSecretsPermissions:
 ingressClassConfig:
   default: false
 
-# enableServiceMutatorWebhook allows you enable the webhook which makes this controller the default for all new services of type LoadBalancer
-enableServiceMutatorWebhook: true
+# disableServiceMutatorWebhook allows you disable the webhook which makes this controller the default for all new services of type LoadBalancer
+disableServiceMutatorWebhook: true
