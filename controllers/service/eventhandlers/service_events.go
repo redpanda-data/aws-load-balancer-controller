@@ -41,19 +41,16 @@ func (h *enqueueRequestsForServiceEvent) Create(ctx context.Context, e event.Cre
 	h.enqueueManagedService(queue, o)
 }
 
-func (h *enqueueRequestsForServiceEvent) Update(ctx context.Context, e event.UpdateEvent, queue workqueue.TypedRateLimitingInterface[reconcile.Request]) {
-	oldSvc, ok := e.ObjectOld.(*corev1.Service)
-	if !ok {
-		return
-	}
-	newSvc, ok := e.ObjectNew.(*corev1.Service)
-	if !ok {
-		return
-	}
-	if equality.Semantic.DeepEqual(oldSvc.Annotations, newSvc.Annotations) &&
-		equality.Semantic.DeepEqual(oldSvc.Spec, newSvc.Spec) &&
-		equality.Semantic.DeepEqual(oldSvc.DeletionTimestamp.IsZero(), newSvc.DeletionTimestamp.IsZero()) {
-		return
+func (h *enqueueRequestsForServiceEvent) Update(e event.UpdateEvent, queue workqueue.RateLimitingInterface) {
+	oldSvc := e.ObjectOld.(*corev1.Service)
+	newSvc := e.ObjectNew.(*corev1.Service)
+
+	if ! equality.Semantic.DeepEqual(oldSvc.ResourceVersion, newSvc.ResourceVersion) {
+		if equality.Semantic.DeepEqual(oldSvc.Annotations, newSvc.Annotations) &&
+			equality.Semantic.DeepEqual(oldSvc.Spec, newSvc.Spec) &&
+			equality.Semantic.DeepEqual(oldSvc.DeletionTimestamp.IsZero(), newSvc.DeletionTimestamp.IsZero()) {
+			return
+		}
 	}
 
 	h.enqueueManagedService(queue, newSvc)
