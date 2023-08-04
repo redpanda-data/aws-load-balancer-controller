@@ -626,7 +626,7 @@ func Test_defaultGroupLoader_Load(t *testing.T) {
 			}
 
 			annotationParser := annotations.NewSuffixAnnotationParser("alb.ingress.kubernetes.io")
-			classLoader := NewDefaultClassLoader(k8sClient)
+			classLoader := NewDefaultClassLoader(k8sClient, true)
 			classAnnotationMatcher := NewDefaultClassAnnotationMatcher("alb")
 			m := &defaultGroupLoader{
 				client:                             k8sClient,
@@ -1490,7 +1490,7 @@ func Test_defaultGroupLoader_checkGroupMembershipType(t *testing.T) {
 			}
 
 			annotationParser := annotations.NewSuffixAnnotationParser("alb.ingress.kubernetes.io")
-			classLoader := NewDefaultClassLoader(k8sClient)
+			classLoader := NewDefaultClassLoader(k8sClient, true)
 			classAnnotationMatcher := NewDefaultClassAnnotationMatcher("alb")
 			m := &defaultGroupLoader{
 				client:                             k8sClient,
@@ -1764,7 +1764,7 @@ func Test_defaultGroupLoader_loadGroupIDIfAnyHelper(t *testing.T) {
 			}
 
 			annotationParser := annotations.NewSuffixAnnotationParser("alb.ingress.kubernetes.io")
-			classLoader := NewDefaultClassLoader(k8sClient)
+			classLoader := NewDefaultClassLoader(k8sClient, true)
 			classAnnotationMatcher := NewDefaultClassAnnotationMatcher("alb")
 			m := &defaultGroupLoader{
 				client:                             k8sClient,
@@ -2112,6 +2112,60 @@ func Test_defaultGroupLoader_classifyIngress(t *testing.T) {
 			},
 			wantIngressClassMatches: false,
 		},
+		{
+			name: "class specified via ingressClassName - mismatches - manageIngressesWithoutIngressClass is set",
+			env: env{
+				ingClassList: []*networking.IngressClass{
+					{
+						ObjectMeta: metav1.ObjectMeta{
+							Name: "ing-class",
+						},
+						Spec: networking.IngressClassSpec{
+							Controller: "some.other/nginx",
+						},
+					},
+				},
+			},
+			fields: fields{
+				ingressClass:                       "",
+				manageIngressesWithoutIngressClass: true,
+			},
+			args: args{
+				ing: &networking.Ingress{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace:   "ing-ns",
+						Name:        "ing-name",
+						Annotations: map[string]string{},
+					},
+					Spec: networking.IngressSpec{
+						IngressClassName: awssdk.String("ing-class"),
+					},
+				},
+			},
+			wantClassifiedIng: ClassifiedIngress{
+				Ing: &networking.Ingress{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace:   "ing-ns",
+						Name:        "ing-name",
+						Annotations: map[string]string{},
+					},
+					Spec: networking.IngressSpec{
+						IngressClassName: awssdk.String("ing-class"),
+					},
+				},
+				IngClassConfig: ClassConfiguration{
+					IngClass: &networking.IngressClass{
+						ObjectMeta: metav1.ObjectMeta{
+							Name: "ing-class",
+						},
+						Spec: networking.IngressClassSpec{
+							Controller: "some.other/nginx",
+						},
+					},
+				},
+			},
+			wantIngressClassMatches: false,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -2127,7 +2181,7 @@ func Test_defaultGroupLoader_classifyIngress(t *testing.T) {
 			}
 
 			annotationParser := annotations.NewSuffixAnnotationParser("alb.ingress.kubernetes.io")
-			classLoader := NewDefaultClassLoader(k8sClient)
+			classLoader := NewDefaultClassLoader(k8sClient, true)
 			classAnnotationMatcher := NewDefaultClassAnnotationMatcher(tt.fields.ingressClass)
 			m := &defaultGroupLoader{
 				client:                             k8sClient,
