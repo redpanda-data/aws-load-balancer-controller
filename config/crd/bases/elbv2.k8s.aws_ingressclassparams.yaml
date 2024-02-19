@@ -173,10 +173,11 @@ spec:
                       items:
                         type: string
                       type: array
-                    description: Tags specifies subnets in the load balancer's VPC
-                      where each tag specified in the map key contains one of the
-                      values in the corresponding value list. Exactly one of this
-                      or `ids` must be specified.
+                    description: |-
+                      Tags specifies subnets in the load balancer's VPC where each
+                      tag specified in the map key contains one of the values in the corresponding
+                      value list.
+                      Exactly one of this or `ids` must be specified.
                     type: object
                 type: object
               tags:
