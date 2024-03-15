@@ -307,6 +307,7 @@ const baseStackJSON = `
                                 "$ref":"#/resources/AWS::ElasticLoadBalancingV2::TargetGroup/ns-1/ing-1-svc-1:http/status/targetGroupARN"
                             },
                             "targetType":"instance",
+                            "vpcID": "vpc-dummy",
                             "ipAddressType":"ipv4",
                             "serviceRef":{
                                 "name":"svc-1",
@@ -349,6 +350,7 @@ const baseStackJSON = `
                             },
                             "targetType":"instance",
                             "ipAddressType":"ipv4",
+                            "vpcID": "vpc-dummy",
                             "serviceRef":{
                                 "name":"svc-2",
                                 "port":"http"
@@ -389,6 +391,7 @@ const baseStackJSON = `
                                 "$ref":"#/resources/AWS::ElasticLoadBalancingV2::TargetGroup/ns-1/ing-1-svc-3:https/status/targetGroupARN"
                             },
                             "targetType":"ip",
+                            "vpcID": "vpc-dummy",
                             "ipAddressType":"ipv4",
                             "serviceRef":{
                                 "name":"svc-3",
@@ -1130,7 +1133,7 @@ func Test_defaultModelBuilder_Build(t *testing.T) {
 					"port": 443,
 					"protocol": "HTTPS",
 					"sslPolicy": "ELBSecurityPolicy-2016-08",
-					"mutualAuthentication" : { 
+					"mutualAuthentication" : {
 						"mode" : "off"
 					}
 				}
@@ -1441,6 +1444,7 @@ func Test_defaultModelBuilder_Build(t *testing.T) {
 						},
 						"spec": {
 							"ipAddressType": "ipv4",
+							"vpcID": "vpc-dummy",
 							"networking": {
 								"ingress": [
 									{
@@ -2428,6 +2432,7 @@ func Test_defaultModelBuilder_Build(t *testing.T) {
 						},
 						"spec": {
 							"ipAddressType": "ipv6",
+							"vpcID": "vpc-dummy",
 							"networking": {
 								"ingress": [
 									{
@@ -2694,6 +2699,7 @@ func Test_defaultModelBuilder_Build(t *testing.T) {
 						},
 						"spec": {
 							"ipAddressType": "ipv4",
+							"vpcID": "vpc-dummy",
 							"networking": {
 								"ingress": [
 									{
@@ -2853,6 +2859,7 @@ func Test_defaultModelBuilder_Build(t *testing.T) {
 						},
 						"spec": {
 							"ipAddressType": "ipv4",
+							"vpcID": "vpc-dummy",
 							"networking": {
 								"ingress": [
 									{
