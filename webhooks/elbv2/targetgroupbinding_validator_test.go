@@ -37,6 +37,7 @@ func Test_targetGroupBindingValidator_ValidateCreate(t *testing.T) {
 	}
 	instanceTargetType := elbv2api.TargetTypeInstance
 	ipTargetType := elbv2api.TargetTypeIP
+	clusterVpcID := "vpcid-02"
 	tests := []struct {
 		name    string
 		fields  fields
@@ -192,7 +193,7 @@ func Test_targetGroupBindingValidator_ValidateCreate(t *testing.T) {
 								TargetGroupArn: awssdk.String("tg-2"),
 								TargetType:     awssdk.String("instance"),
 								IpAddressType:  awssdk.String("ipv6"),
-								VpcId:          awssdk.String("vpcid-02"),
+								VpcId:          &clusterVpcID,
 							},
 						},
 					},
@@ -205,7 +206,7 @@ func Test_targetGroupBindingValidator_ValidateCreate(t *testing.T) {
 								TargetGroupArn: awssdk.String("tg-2"),
 								TargetType:     awssdk.String("instance"),
 								IpAddressType:  awssdk.String("ipv6"),
-								VpcId:          awssdk.String("vpcid-02"),
+								VpcId:          &clusterVpcID,
 							},
 						},
 					},
@@ -217,7 +218,7 @@ func Test_targetGroupBindingValidator_ValidateCreate(t *testing.T) {
 						TargetGroupARN: "tg-2",
 						TargetType:     &instanceTargetType,
 						IPAddressType:  &targetGroupIPAddressTypeIPv6,
-						VpcID:          "vpcid-02",
+						VpcID:          clusterVpcID,
 					},
 				},
 			},
@@ -236,7 +237,7 @@ func Test_targetGroupBindingValidator_ValidateCreate(t *testing.T) {
 								TargetGroupArn: awssdk.String("tg-2"),
 								TargetType:     awssdk.String("instance"),
 								IpAddressType:  awssdk.String("ipv6"),
-								VpcId:          awssdk.String("vpcid-02"),
+								VpcId:          &clusterVpcID,
 							},
 						},
 					},
@@ -249,7 +250,7 @@ func Test_targetGroupBindingValidator_ValidateCreate(t *testing.T) {
 								TargetGroupArn: awssdk.String("tg-2"),
 								TargetType:     awssdk.String("instance"),
 								IpAddressType:  awssdk.String("ipv6"),
-								VpcId:          awssdk.String("vpcid-02"),
+								VpcId:          &clusterVpcID,
 							},
 						},
 					},
@@ -477,6 +478,7 @@ func Test_targetGroupBindingValidator_checkImmutableFields(t *testing.T) {
 	}
 	instanceTargetType := elbv2api.TargetTypeInstance
 	ipTargetType := elbv2api.TargetTypeIP
+	clusterVpcID := "cluster-vpc-id"
 	tests := []struct {
 		name    string
 		args    args
@@ -744,11 +746,31 @@ func Test_targetGroupBindingValidator_checkImmutableFields(t *testing.T) {
 			},
 			wantErr: errors.New("TargetGroupBinding update may not change these fields: spec.vpcID"),
 		},
+		{
+			name: "VpcID modified from nil to cluster vpc-id is allowed",
+			args: args{
+				tgb: &elbv2api.TargetGroupBinding{
+					Spec: elbv2api.TargetGroupBindingSpec{
+						TargetGroupARN: "tg-2",
+						TargetType:     &ipTargetType,
+						VpcID:          clusterVpcID,
+					},
+				},
+				oldTGB: &elbv2api.TargetGroupBinding{
+					Spec: elbv2api.TargetGroupBindingSpec{
+						TargetGroupARN: "tg-2",
+						TargetType:     &ipTargetType,
+					},
+				},
+			},
+			wantErr: nil,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			v := &targetGroupBindingValidator{
 				logger: logr.New(&log.NullLogSink{}),
+				vpcID:  clusterVpcID,
 			}
 			err := v.checkImmutableFields(tt.args.tgb, tt.args.oldTGB)
 			if tt.wantErr != nil {
