@@ -1895,7 +1895,7 @@ func Test_defaultModelBuilder_Build(t *testing.T) {
 							IngClassConfig: ClassConfiguration{
 								IngClassParams: &v1beta1.IngressClassParams{
 									Spec: v1beta1.IngressClassParamsSpec{
-										CertficateArn: []string{"arn:aws:acm:us-east-1:9999999:certificate/ingress-class-certificate-arn"},
+										CertificateArn: []string{"arn:aws:acm:us-east-1:9999999:certificate/ingress-class-certificate-arn"},
 									},
 								},
 							},
