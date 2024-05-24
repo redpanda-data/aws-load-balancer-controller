@@ -12,7 +12,6 @@ import (
 
 var mutatingHandlerLog = ctrl.Log.WithName("mutating_handler")
 
-// var _ admission.DecoderInjector = &mutatingHandler{}
 var _ admission.Handler = &mutatingHandler{}
 
 type mutatingHandler struct {

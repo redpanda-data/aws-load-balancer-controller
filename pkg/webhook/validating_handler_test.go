@@ -125,8 +125,8 @@ func Test_validatingHandler_Handle(t *testing.T) {
 					Allowed: false,
 					Result: &metav1.Status{
 						Code:    http.StatusForbidden,
-						Reason:  metav1.StatusReasonForbidden,
 						Message: "oops, some error happened",
+						Reason:  "Forbidden",
 					},
 				},
 			},
@@ -223,8 +223,9 @@ func Test_validatingHandler_Handle(t *testing.T) {
 					Allowed: false,
 					Result: &metav1.Status{
 						Code:    http.StatusForbidden,
-						Reason:  metav1.StatusReasonForbidden,
-						Message: "oops, some error happened"},
+						Message: "oops, some error happened",
+						Reason:  "Forbidden",
+					},
 				},
 			},
 		},
@@ -316,8 +317,9 @@ func Test_validatingHandler_Handle(t *testing.T) {
 					Allowed: false,
 					Result: &metav1.Status{
 						Code:    http.StatusForbidden,
-						Reason:  metav1.StatusReasonForbidden,
-						Message: "oops, some error happened"},
+						Message: "oops, some error happened",
+						Reason:  "Forbidden",
+					},
 				},
 			},
 		},

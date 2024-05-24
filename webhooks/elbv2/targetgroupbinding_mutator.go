@@ -152,5 +152,5 @@ func (m *targetGroupBindingMutator) getVpcIDFromAWS(ctx context.Context, tgARN s
 // +kubebuilder:webhook:path=/mutate-elbv2-k8s-aws-v1beta1-targetgroupbinding,mutating=true,failurePolicy=fail,groups=elbv2.k8s.aws,resources=targetgroupbindings,verbs=create;update,versions=v1beta1,name=mtargetgroupbinding.elbv2.k8s.aws,sideEffects=None,webhookVersions=v1,admissionReviewVersions=v1beta1
 
 func (m *targetGroupBindingMutator) SetupWithManager(mgr ctrl.Manager) {
-	mgr.GetWebhookServer().Register(apiPathMutateELBv2TargetGroupBinding, webhook.MutatingWebhookForMutator(mgr.GetScheme(), m))
+	mgr.GetWebhookServer().Register(apiPathMutateELBv2TargetGroupBinding, webhook.MutatingWebhookForMutator(m, mgr.GetScheme()))
 }

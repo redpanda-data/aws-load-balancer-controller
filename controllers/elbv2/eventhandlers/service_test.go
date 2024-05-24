@@ -192,7 +192,7 @@ func Test_enqueueRequestsForServiceEvent_enqueueImpactedTargetGroupBindings(t *t
 				k8sClient: k8sClient,
 				logger:    logr.New(&log.NullLogSink{}),
 			}
-			queue := &controllertest.TypedQueue[reconcile.Request]{TypedInterface: workqueue.NewTyped[reconcile.Request]()}
+			queue := &controllertest.Queue{Interface: workqueue.New()}
 			h.enqueueImpactedTargetGroupBindings(context.Background(), queue, tt.args.svc)
 			gotRequests := testutils.ExtractCTRLRequestsFromQueue(queue)
 			assert.True(t, cmp.Equal(tt.wantRequests, gotRequests),

@@ -230,6 +230,7 @@ func Test_defaultModelBuildTask_buildAuthenticateOIDCAction(t *testing.T) {
 			k8sClient := testclient.NewFakeClient()
 			k8sSchema := k8sClient.Scheme()
 			clientgoscheme.AddToScheme(k8sSchema)
+			k8sClient := testclient.NewClientBuilder().WithScheme(k8sSchema).Build()
 			for _, secret := range tt.env.secrets {
 				err := k8sClient.Create(context.Background(), secret.DeepCopy())
 				assert.NoError(t, err)
