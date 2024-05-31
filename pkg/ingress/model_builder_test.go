@@ -1019,8 +1019,9 @@ func Test_defaultModelBuilder_Build(t *testing.T) {
 								Namespace: "ns-1",
 								Name:      "ing-1",
 								Annotations: map[string]string{
-									"alb.ingress.kubernetes.io/scheme":          "internet-facing",
-									"alb.ingress.kubernetes.io/certificate-arn": "arn:aws:acm:us-east-1:9999999:certificate/22222222,arn:aws:acm:us-east-1:9999999:certificate/33333333,arn:aws:acm:us-east-1:9999999:certificate/11111111,,arn:aws:acm:us-east-1:9999999:certificate/11111111",
+									"alb.ingress.kubernetes.io/scheme":                "internet-facing",
+									"alb.ingress.kubernetes.io/certificate-arn":       "arn:aws:acm:us-east-1:9999999:certificate/22222222,arn:aws:acm:us-east-1:9999999:certificate/33333333,arn:aws:acm:us-east-1:9999999:certificate/11111111,,arn:aws:acm:us-east-1:9999999:certificate/11111111",
+									"alb.ingress.kubernetes.io/mutual-authentication": `[{"port":443,"mode":"off"}]`,
 								},
 							},
 								Spec: networking.IngressSpec{
@@ -1133,8 +1134,9 @@ func Test_defaultModelBuilder_Build(t *testing.T) {
 					"port": 443,
 					"protocol": "HTTPS",
 					"sslPolicy": "ELBSecurityPolicy-2016-08",
-					"mutualAuthentication" : {
-						"mode" : "off"
+                    "mutualAuthentication" : {
+						"mode" : "off",
+                        "trustStoreArn": ""
 					}
 				}
 			},
@@ -1741,10 +1743,7 @@ func Test_defaultModelBuilder_Build(t *testing.T) {
 					},
 					"port": 443,
 					"protocol": "HTTPS",
-					"sslPolicy": "ingress-class-policy",
-					"mutualAuthentication": {
-						"mode" : "off"
-					}
+					"sslPolicy": "ingress-class-policy"
 				}
 			},
 			"80": null
@@ -2009,10 +2008,7 @@ func Test_defaultModelBuilder_Build(t *testing.T) {
 					},
 					"port": 443,
 					"protocol": "HTTPS",
-					"sslPolicy": "ELBSecurityPolicy-2016-08",
-					"mutualAuthentication": {
-						"mode" : "off"
-					}
+					"sslPolicy": "ELBSecurityPolicy-2016-08"
 				}
 			},
 			"80": null
