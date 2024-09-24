@@ -2,10 +2,10 @@ package targetgroupbinding
 
 import (
 	"context"
+	elbv2types "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2/types"
 	"testing"
 
-	awssdk "github.com/aws/aws-sdk-go/aws"
-	elbv2sdk "github.com/aws/aws-sdk-go/service/elbv2"
+	awssdk "github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/go-logr/logr"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
@@ -26,7 +26,7 @@ func Test_defaultResourceManager_updateTargetHealthPodConditionForPod(t *testing
 
 	type args struct {
 		pod                  k8s.PodInfo
-		targetHealth         *elbv2sdk.TargetHealth
+		targetHealth         *elbv2types.TargetHealth
 		targetHealthCondType corev1.PodConditionType
 	}
 
@@ -82,8 +82,8 @@ func Test_defaultResourceManager_updateTargetHealthPodConditionForPod(t *testing
 						},
 					},
 				},
-				targetHealth: &elbv2sdk.TargetHealth{
-					State: awssdk.String(elbv2sdk.TargetHealthStateEnumHealthy),
+				targetHealth: &elbv2types.TargetHealth{
+					State: elbv2types.TargetHealthStateEnumHealthy,
 				},
 				targetHealthCondType: "target-health.elbv2.k8s.aws/my-tgb",
 			},
@@ -136,7 +136,7 @@ func Test_defaultResourceManager_updateTargetHealthPodConditionForPod(t *testing
 							Conditions: []corev1.PodCondition{
 								{
 									Type:    "target-health.elbv2.k8s.aws/my-tgb",
-									Message: elbv2sdk.TargetHealthReasonEnumElbRegistrationInProgress,
+									Message: string(elbv2types.TargetHealthReasonEnumRegistrationInProgress),
 									Reason:  "Elb.RegistrationInProgress",
 									Status:  corev1.ConditionFalse,
 								},
@@ -161,7 +161,7 @@ func Test_defaultResourceManager_updateTargetHealthPodConditionForPod(t *testing
 					Conditions: []corev1.PodCondition{
 						{
 							Type:    "target-health.elbv2.k8s.aws/my-tgb",
-							Message: elbv2sdk.TargetHealthReasonEnumElbRegistrationInProgress,
+							Message: string(elbv2types.TargetHealthReasonEnumRegistrationInProgress),
 							Reason:  "Elb.RegistrationInProgress",
 							Status:  corev1.ConditionFalse,
 						},
@@ -171,8 +171,8 @@ func Test_defaultResourceManager_updateTargetHealthPodConditionForPod(t *testing
 						},
 					},
 				},
-				targetHealth: &elbv2sdk.TargetHealth{
-					State: awssdk.String(elbv2sdk.TargetHealthStateEnumHealthy),
+				targetHealth: &elbv2types.TargetHealth{
+					State: elbv2types.TargetHealthStateEnumHealthy,
 				},
 				targetHealthCondType: "target-health.elbv2.k8s.aws/my-tgb",
 			},
@@ -226,7 +226,7 @@ func Test_defaultResourceManager_updateTargetHealthPodConditionForPod(t *testing
 								{
 									Type:    "target-health.elbv2.k8s.aws/my-tgb",
 									Status:  corev1.ConditionFalse,
-									Reason:  elbv2sdk.TargetHealthReasonEnumElbRegistrationInProgress,
+									Reason:  string(elbv2types.TargetHealthReasonEnumRegistrationInProgress),
 									Message: "Target registration is in progress",
 								},
 								{
@@ -251,7 +251,7 @@ func Test_defaultResourceManager_updateTargetHealthPodConditionForPod(t *testing
 						{
 							Type:    "target-health.elbv2.k8s.aws/my-tgb",
 							Status:  corev1.ConditionFalse,
-							Reason:  elbv2sdk.TargetHealthReasonEnumElbRegistrationInProgress,
+							Reason:  string(elbv2types.TargetHealthReasonEnumRegistrationInProgress),
 							Message: "Target registration is in progress",
 						},
 						{
@@ -260,9 +260,9 @@ func Test_defaultResourceManager_updateTargetHealthPodConditionForPod(t *testing
 						},
 					},
 				},
-				targetHealth: &elbv2sdk.TargetHealth{
-					State:       awssdk.String(elbv2sdk.TargetHealthStateEnumUnhealthy),
-					Reason:      awssdk.String(elbv2sdk.TargetHealthReasonEnumTargetFailedHealthChecks),
+				targetHealth: &elbv2types.TargetHealth{
+					State:       elbv2types.TargetHealthStateEnumUnhealthy,
+					Reason:      elbv2types.TargetHealthReasonEnumFailedHealthChecks,
 					Description: awssdk.String("Health checks failed"),
 				},
 				targetHealthCondType: "target-health.elbv2.k8s.aws/my-tgb",
@@ -286,7 +286,7 @@ func Test_defaultResourceManager_updateTargetHealthPodConditionForPod(t *testing
 						{
 							Type:    "target-health.elbv2.k8s.aws/my-tgb",
 							Status:  corev1.ConditionFalse,
-							Reason:  elbv2sdk.TargetHealthReasonEnumTargetFailedHealthChecks,
+							Reason:  string(elbv2types.TargetHealthReasonEnumFailedHealthChecks),
 							Message: "Health checks failed",
 						},
 						{
@@ -428,9 +428,9 @@ func Test_containsTargetsInInitialState(t *testing.T) {
 				matchedEndpointAndTargets: []podEndpointAndTargetPair{
 					{
 						target: TargetInfo{
-							TargetHealth: &elbv2sdk.TargetHealth{
-								State:       awssdk.String(elbv2sdk.TargetHealthStateEnumInitial),
-								Reason:      awssdk.String(elbv2sdk.TargetHealthReasonEnumElbRegistrationInProgress),
+							TargetHealth: &elbv2types.TargetHealth{
+								State:       elbv2types.TargetHealthStateEnumInitial,
+								Reason:      elbv2types.TargetHealthReasonEnumRegistrationInProgress,
 								Description: awssdk.String("Target registration is in progress"),
 							},
 						},
@@ -445,8 +445,8 @@ func Test_containsTargetsInInitialState(t *testing.T) {
 				matchedEndpointAndTargets: []podEndpointAndTargetPair{
 					{
 						target: TargetInfo{
-							TargetHealth: &elbv2sdk.TargetHealth{
-								State: awssdk.String(elbv2sdk.TargetHealthStateEnumHealthy),
+							TargetHealth: &elbv2types.TargetHealth{
+								State: elbv2types.TargetHealthStateEnumHealthy,
 							},
 						},
 					},
