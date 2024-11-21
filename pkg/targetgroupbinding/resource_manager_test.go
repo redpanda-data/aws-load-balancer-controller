@@ -3,6 +3,8 @@ package targetgroupbinding
 import (
 	"context"
 	elbv2types "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2/types"
+	elbv2api "sigs.k8s.io/aws-load-balancer-controller/apis/elbv2/v1beta1"
+	lbcmetrics "sigs.k8s.io/aws-load-balancer-controller/pkg/metrics/lbc"
 	"testing"
 
 	awssdk "github.com/aws/aws-sdk-go-v2/aws"
@@ -24,6 +26,9 @@ func Test_defaultResourceManager_updateTargetHealthPodConditionForPod(t *testing
 		pods []*corev1.Pod
 	}
 
+	tgbName := "tgb"
+	tgbNamespace := "tgbNamespace"
+
 	type args struct {
 		pod                  k8s.PodInfo
 		targetHealth         *elbv2types.TargetHealth
@@ -31,12 +36,13 @@ func Test_defaultResourceManager_updateTargetHealthPodConditionForPod(t *testing
 	}
 
 	tests := []struct {
-		name    string
-		env     env
-		args    args
-		want    bool
-		wantPod *corev1.Pod
-		wantErr error
+		name       string
+		env        env
+		args       args
+		want       bool
+		wantPod    *corev1.Pod
+		wantMetric bool
+		wantErr    error
 	}{
 		{
 			name: "pod contains readinessGate and targetHealth is healthy - add pod condition",
@@ -135,10 +141,11 @@ func Test_defaultResourceManager_updateTargetHealthPodConditionForPod(t *testing
 						Status: corev1.PodStatus{
 							Conditions: []corev1.PodCondition{
 								{
-									Type:    "target-health.elbv2.k8s.aws/my-tgb",
-									Message: string(elbv2types.TargetHealthReasonEnumRegistrationInProgress),
-									Reason:  "Elb.RegistrationInProgress",
-									Status:  corev1.ConditionFalse,
+									Type:               "target-health.elbv2.k8s.aws/my-tgb",
+									Message:            string(elbv2types.TargetHealthReasonEnumRegistrationInProgress),
+									Reason:             "Elb.RegistrationInProgress",
+									Status:             corev1.ConditionFalse,
+									LastTransitionTime: metav1.Now(),
 								},
 								{
 									Type:   corev1.ContainersReady,
@@ -160,10 +167,11 @@ func Test_defaultResourceManager_updateTargetHealthPodConditionForPod(t *testing
 					},
 					Conditions: []corev1.PodCondition{
 						{
-							Type:    "target-health.elbv2.k8s.aws/my-tgb",
-							Message: string(elbv2types.TargetHealthReasonEnumRegistrationInProgress),
-							Reason:  "Elb.RegistrationInProgress",
-							Status:  corev1.ConditionFalse,
+							Type:               "target-health.elbv2.k8s.aws/my-tgb",
+							Message:            string(elbv2types.TargetHealthReasonEnumRegistrationInProgress),
+							Reason:             "Elb.RegistrationInProgress",
+							Status:             corev1.ConditionFalse,
+							LastTransitionTime: metav1.Now(),
 						},
 						{
 							Type:   corev1.ContainersReady,
@@ -176,7 +184,8 @@ func Test_defaultResourceManager_updateTargetHealthPodConditionForPod(t *testing
 				},
 				targetHealthCondType: "target-health.elbv2.k8s.aws/my-tgb",
 			},
-			want: false,
+			want:       false,
+			wantMetric: true,
 			wantPod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Namespace: "default",
@@ -224,10 +233,11 @@ func Test_defaultResourceManager_updateTargetHealthPodConditionForPod(t *testing
 						Status: corev1.PodStatus{
 							Conditions: []corev1.PodCondition{
 								{
-									Type:    "target-health.elbv2.k8s.aws/my-tgb",
-									Status:  corev1.ConditionFalse,
-									Reason:  string(elbv2types.TargetHealthReasonEnumRegistrationInProgress),
-									Message: "Target registration is in progress",
+									Type:               "target-health.elbv2.k8s.aws/my-tgb",
+									Status:             corev1.ConditionFalse,
+									Reason:             string(elbv2types.TargetHealthReasonEnumRegistrationInProgress),
+									Message:            "Target registration is in progress",
+									LastTransitionTime: metav1.Now(),
 								},
 								{
 									Type:   corev1.ContainersReady,
@@ -381,9 +391,14 @@ func Test_defaultResourceManager_updateTargetHealthPodConditionForPod(t *testing
 			k8sClient := testclient.NewClientBuilder().WithScheme(k8sSchema).Build()
 
 			m := &defaultResourceManager{
-				k8sClient: k8sClient,
-				logger:    logr.New(&log.NullLogSink{}),
+				k8sClient:        k8sClient,
+				logger:           logr.New(&log.NullLogSink{}),
+				metricsCollector: lbcmetrics.NewMockCollector(),
 			}
+
+			tgb := &elbv2api.TargetGroupBinding{}
+			tgb.Name = tgbName
+			tgb.Namespace = tgbNamespace
 
 			ctx := context.Background()
 			for _, pod := range tt.env.pods {
@@ -392,7 +407,7 @@ func Test_defaultResourceManager_updateTargetHealthPodConditionForPod(t *testing
 			}
 
 			got, err := m.updateTargetHealthPodConditionForPod(context.Background(),
-				tt.args.pod, tt.args.targetHealth, tt.args.targetHealthCondType)
+				tt.args.pod, tt.args.targetHealth, tt.args.targetHealthCondType, tgb)
 			if tt.wantErr != nil {
 				assert.EqualError(t, err, tt.wantErr.Error())
 			} else {
@@ -409,6 +424,9 @@ func Test_defaultResourceManager_updateTargetHealthPodConditionForPod(t *testing
 				}
 				assert.True(t, cmp.Equal(tt.wantPod, updatedPod, opts), "diff", cmp.Diff(tt.wantPod, updatedPod, opts))
 			}
+
+			mockCollector := m.metricsCollector.(*lbcmetrics.MockCollector)
+			assert.Equal(t, tt.wantMetric, len(mockCollector.Invocations[lbcmetrics.MetricPodReadinessGateReady]) == 1)
 		})
 	}
 }
