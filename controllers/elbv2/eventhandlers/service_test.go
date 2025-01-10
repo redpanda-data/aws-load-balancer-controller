@@ -2,6 +2,7 @@ package eventhandlers
 
 import (
 	"context"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"testing"
 
 	"github.com/go-logr/logr"
@@ -192,7 +193,7 @@ func Test_enqueueRequestsForServiceEvent_enqueueImpactedTargetGroupBindings(t *t
 				k8sClient: k8sClient,
 				logger:    logr.New(&log.NullLogSink{}),
 			}
-			queue := &controllertest.Queue{Interface: workqueue.New()}
+			queue := &controllertest.TypedQueue[reconcile.Request]{TypedInterface: workqueue.NewTyped[reconcile.Request]()}
 			h.enqueueImpactedTargetGroupBindings(context.Background(), queue, tt.args.svc)
 			gotRequests := testutils.ExtractCTRLRequestsFromQueue(queue)
 			assert.True(t, cmp.Equal(tt.wantRequests, gotRequests),
