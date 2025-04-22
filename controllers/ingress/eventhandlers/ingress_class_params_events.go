@@ -3,6 +3,8 @@ package eventhandlers
 import (
 	"context"
 
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
 	"github.com/go-logr/logr"
 	networking "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -16,8 +18,8 @@ import (
 )
 
 // NewEnqueueRequestsForIngressClassParamsEvent constructs new enqueueRequestsForIngressClassParamsEvent.
-func NewEnqueueRequestsForIngressClassParamsEvent(ingClassEventChan chan<- event.GenericEvent,
-	k8sClient client.Client, eventRecorder record.EventRecorder, logger logr.Logger) *enqueueRequestsForIngressClassParamsEvent {
+func NewEnqueueRequestsForIngressClassParamsEvent(ingClassEventChan chan<- event.TypedGenericEvent[*networking.IngressClass],
+	k8sClient client.Client, eventRecorder record.EventRecorder, logger logr.Logger) handler.TypedEventHandler[*elbv2api.IngressClassParams, reconcile.Request] {
 	return &enqueueRequestsForIngressClassParamsEvent{
 		ingClassEventChan: ingClassEventChan,
 		k8sClient:         k8sClient,
@@ -26,32 +28,24 @@ func NewEnqueueRequestsForIngressClassParamsEvent(ingClassEventChan chan<- event
 	}
 }
 
-var _ handler.EventHandler = (*enqueueRequestsForIngressClassParamsEvent)(nil)
+var _ handler.TypedEventHandler[*elbv2api.IngressClassParams, reconcile.Request] = (*enqueueRequestsForIngressClassParamsEvent)(nil)
 
 type enqueueRequestsForIngressClassParamsEvent struct {
-	ingClassEventChan chan<- event.GenericEvent
+	ingClassEventChan chan<- event.TypedGenericEvent[*networking.IngressClass]
 	k8sClient         client.Client
 	eventRecorder     record.EventRecorder
 	logger            logr.Logger
 }
 
-func (h *enqueueRequestsForIngressClassParamsEvent) Create(ctx context.Context, e event.CreateEvent, _ workqueue.RateLimitingInterface) {
-	ingClassParamsNew, ok := e.Object.(*elbv2api.IngressClassParams)
-	if !ok {
-		return
-	}
-	h.enqueueImpactedIngressClasses(ingClassParamsNew)
+func (h *enqueueRequestsForIngressClassParamsEvent) Create(ctx context.Context, e event.TypedCreateEvent[*elbv2api.IngressClassParams], _ workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+	ingClassParamsNew := e.Object
+	h.enqueueImpactedIngressClasses(ctx, ingClassParamsNew)
 }
 
-func (h *enqueueRequestsForIngressClassParamsEvent) Update(ctx context.Context, e event.UpdateEvent, _ workqueue.RateLimitingInterface) {
-	ingClassParamsOld, ok := e.ObjectOld.(*elbv2api.IngressClassParams)
-	if !ok {
-		return
-	}
-	ingClassParamsNew, ok := e.ObjectNew.(*elbv2api.IngressClassParams)
-	if !ok {
-		return
-	}
+func (h *enqueueRequestsForIngressClassParamsEvent) Update(ctx context.Context, e event.TypedUpdateEvent[*elbv2api.IngressClassParams], _ workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+	ingClassParamsOld := e.ObjectOld
+	ingClassParamsNew := e.ObjectNew
+
 	// we only care below update event:
 	//	2. IngressClassParams spec updates
 	//	3. IngressClassParams deletion
@@ -60,22 +54,19 @@ func (h *enqueueRequestsForIngressClassParamsEvent) Update(ctx context.Context, 
 		return
 	}
 
-	h.enqueueImpactedIngressClasses(ingClassParamsNew)
+	h.enqueueImpactedIngressClasses(ctx, ingClassParamsNew)
 }
 
-func (h *enqueueRequestsForIngressClassParamsEvent) Delete(ctx context.Context, e event.DeleteEvent, _ workqueue.RateLimitingInterface) {
-	ingClassParamsOld, ok := e.Object.(*elbv2api.IngressClassParams)
-	if !ok {
-		return
-	}
-	h.enqueueImpactedIngressClasses(ingClassParamsOld)
+func (h *enqueueRequestsForIngressClassParamsEvent) Delete(ctx context.Context, e event.TypedDeleteEvent[*elbv2api.IngressClassParams], _ workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+	ingClassParamsOld := e.Object
+	h.enqueueImpactedIngressClasses(ctx, ingClassParamsOld)
 }
 
-func (h *enqueueRequestsForIngressClassParamsEvent) Generic(ctx context.Context, e event.GenericEvent, _ workqueue.RateLimitingInterface) {
+func (h *enqueueRequestsForIngressClassParamsEvent) Generic(context.Context, event.TypedGenericEvent[*elbv2api.IngressClassParams], workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 	// we don't have any generic event for secrets.
 }
 
-func (h *enqueueRequestsForIngressClassParamsEvent) enqueueImpactedIngressClasses(ingClassParams *elbv2api.IngressClassParams) {
+func (h *enqueueRequestsForIngressClassParamsEvent) enqueueImpactedIngressClasses(ctx context.Context, ingClassParams *elbv2api.IngressClassParams) {
 	ingClassList := &networking.IngressClassList{}
 	if err := h.k8sClient.List(context.Background(), ingClassList,
 		client.MatchingFields{ingress.IndexKeyIngressClassParamsRefName: ingClassParams.GetName()}); err != nil {
@@ -88,7 +79,7 @@ func (h *enqueueRequestsForIngressClassParamsEvent) enqueueImpactedIngressClasse
 		h.logger.V(1).Info("enqueue ingressClass for ingressClassParams event",
 			"ingressClassParams", ingClassParams.GetName(),
 			"ingressClass", ingClass.GetName())
-		h.ingClassEventChan <- event.GenericEvent{
+		h.ingClassEventChan <- event.TypedGenericEvent[*networking.IngressClass]{
 			Object: ingClass,
 		}
 	}

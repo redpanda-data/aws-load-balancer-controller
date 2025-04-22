@@ -3,6 +3,8 @@ package eventhandlers
 import (
 	"context"
 
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	networking "k8s.io/api/networking/v1"
@@ -17,8 +19,8 @@ import (
 )
 
 // NewEnqueueRequestsForServiceEvent constructs new enqueueRequestsForServiceEvent.
-func NewEnqueueRequestsForServiceEvent(ingEventChan chan<- event.GenericEvent,
-	k8sClient client.Client, eventRecorder record.EventRecorder, logger logr.Logger) *enqueueRequestsForServiceEvent {
+func NewEnqueueRequestsForServiceEvent(ingEventChan chan<- event.TypedGenericEvent[*networking.Ingress],
+	k8sClient client.Client, eventRecorder record.EventRecorder, logger logr.Logger) handler.TypedEventHandler[*corev1.Service, reconcile.Request] {
 	return &enqueueRequestsForServiceEvent{
 		ingEventChan:  ingEventChan,
 		k8sClient:     k8sClient,
@@ -27,32 +29,24 @@ func NewEnqueueRequestsForServiceEvent(ingEventChan chan<- event.GenericEvent,
 	}
 }
 
-var _ handler.EventHandler = (*enqueueRequestsForServiceEvent)(nil)
+var _ handler.TypedEventHandler[*corev1.Service, reconcile.Request] = (*enqueueRequestsForServiceEvent)(nil)
 
 type enqueueRequestsForServiceEvent struct {
-	ingEventChan  chan<- event.GenericEvent
+	ingEventChan  chan<- event.TypedGenericEvent[*networking.Ingress]
 	k8sClient     client.Client
 	eventRecorder record.EventRecorder
 	logger        logr.Logger
 }
 
-func (h *enqueueRequestsForServiceEvent) Create(ctx context.Context, e event.CreateEvent, _ workqueue.RateLimitingInterface) {
-	svcNew, ok := e.Object.(*corev1.Service)
-	if !ok {
-		return
-	}
-	h.enqueueImpactedIngresses(svcNew)
+func (h *enqueueRequestsForServiceEvent) Create(ctx context.Context, e event.TypedCreateEvent[*corev1.Service], _ workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+	svcNew := e.Object
+	h.enqueueImpactedIngresses(ctx, svcNew)
 }
 
-func (h *enqueueRequestsForServiceEvent) Update(ctx context.Context, e event.UpdateEvent, _ workqueue.RateLimitingInterface) {
-	svcOld, ok := e.ObjectOld.(*corev1.Service)
-	if !ok {
-		return
-	}
-	svcNew, ok := e.ObjectNew.(*corev1.Service)
-	if !ok {
-		return
-	}
+func (h *enqueueRequestsForServiceEvent) Update(ctx context.Context, e event.TypedUpdateEvent[*corev1.Service], _ workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+	svcOld := e.ObjectOld
+	svcNew := e.ObjectNew
+
 	// we only care below update event:
 	//	1. Service annotation updates
 	//	2. Service spec updates
@@ -63,26 +57,20 @@ func (h *enqueueRequestsForServiceEvent) Update(ctx context.Context, e event.Upd
 		return
 	}
 
-	h.enqueueImpactedIngresses(svcNew)
+	h.enqueueImpactedIngresses(ctx, svcNew)
 }
 
-func (h *enqueueRequestsForServiceEvent) Delete(ctx context.Context, e event.DeleteEvent, _ workqueue.RateLimitingInterface) {
-	svcOld, ok := e.Object.(*corev1.Service)
-	if !ok {
-		return
-	}
-	h.enqueueImpactedIngresses(svcOld)
+func (h *enqueueRequestsForServiceEvent) Delete(ctx context.Context, e event.TypedDeleteEvent[*corev1.Service], _ workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+	svcOld := e.Object
+	h.enqueueImpactedIngresses(ctx, svcOld)
 }
 
-func (h *enqueueRequestsForServiceEvent) Generic(ctx context.Context, e event.GenericEvent, _ workqueue.RateLimitingInterface) {
-	svc, ok := e.Object.(*corev1.Service)
-	if !ok {
-		return
-	}
-	h.enqueueImpactedIngresses(svc)
+func (h *enqueueRequestsForServiceEvent) Generic(ctx context.Context, e event.TypedGenericEvent[*corev1.Service], _ workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+	svc := e.Object
+	h.enqueueImpactedIngresses(ctx, svc)
 }
 
-func (h *enqueueRequestsForServiceEvent) enqueueImpactedIngresses(svc *corev1.Service) {
+func (h *enqueueRequestsForServiceEvent) enqueueImpactedIngresses(ctx context.Context, svc *corev1.Service) {
 	ingList := &networking.IngressList{}
 	if err := h.k8sClient.List(context.Background(), ingList,
 		client.InNamespace(svc.GetNamespace()),
@@ -98,7 +86,7 @@ func (h *enqueueRequestsForServiceEvent) enqueueImpactedIngresses(svc *corev1.Se
 		h.logger.V(1).Info("enqueue ingress for service event",
 			"service", svcKey,
 			"ingress", k8s.NamespacedName(ing))
-		h.ingEventChan <- event.GenericEvent{
+		h.ingEventChan <- event.TypedGenericEvent[*networking.Ingress]{
 			Object: ing,
 		}
 	}
