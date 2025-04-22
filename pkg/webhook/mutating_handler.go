@@ -17,13 +17,7 @@ var _ admission.Handler = &mutatingHandler{}
 
 type mutatingHandler struct {
 	mutator Mutator
-	decoder *admission.Decoder
-}
-
-// InjectDecoder injects the decoder into a mutatingHandler.
-func (h *mutatingHandler) InjectDecoder(d *admission.Decoder) error {
-	h.decoder = d
-	return nil
+	decoder admission.Decoder
 }
 
 // Handle handles admission requests.

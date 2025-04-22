@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:experimental
 
-FROM --platform=${TARGETPLATFORM} public.ecr.aws/docker/library/golang:1.21.8 AS base
+FROM --platform=${TARGETPLATFORM} public.ecr.aws/docker/library/golang:1.23.8 AS base
 WORKDIR /workspace
 # Copy the Go Modules manifests
 COPY go.mod go.mod

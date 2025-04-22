@@ -31,7 +31,7 @@ type enqueueRequestsForNodeEvent struct {
 }
 
 // Create is called in response to an create event - e.g. Pod Creation.
-func (h *enqueueRequestsForNodeEvent) Create(ctx context.Context, e event.CreateEvent, queue workqueue.RateLimitingInterface) {
+func (h *enqueueRequestsForNodeEvent) Create(ctx context.Context, e event.CreateEvent, queue workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 	nodeNew, ok := e.Object.(*corev1.Node)
 	if !ok {
 		return
@@ -40,7 +40,7 @@ func (h *enqueueRequestsForNodeEvent) Create(ctx context.Context, e event.Create
 }
 
 // Update is called in response to an update event -  e.g. Pod Updated.
-func (h *enqueueRequestsForNodeEvent) Update(ctx context.Context, e event.UpdateEvent, queue workqueue.RateLimitingInterface) {
+func (h *enqueueRequestsForNodeEvent) Update(ctx context.Context, e event.UpdateEvent, queue workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 	nodeOld, ok := e.ObjectOld.(*corev1.Node)
 	if !ok {
 		return
@@ -53,7 +53,7 @@ func (h *enqueueRequestsForNodeEvent) Update(ctx context.Context, e event.Update
 }
 
 // Delete is called in response to a delete event - e.g. Pod Deleted.
-func (h *enqueueRequestsForNodeEvent) Delete(ctx context.Context, e event.DeleteEvent, queue workqueue.RateLimitingInterface) {
+func (h *enqueueRequestsForNodeEvent) Delete(ctx context.Context, e event.DeleteEvent, queue workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 	nodeOld, ok := e.Object.(*corev1.Node)
 	if !ok {
 		return
@@ -63,12 +63,12 @@ func (h *enqueueRequestsForNodeEvent) Delete(ctx context.Context, e event.Delete
 
 // Generic is called in response to an event of an unknown type or a synthetic event triggered as a cron or
 // external trigger request - e.g. reconcile AutoScaling, or a WebHook.
-func (h *enqueueRequestsForNodeEvent) Generic(ctx context.Context, e event.GenericEvent, queue workqueue.RateLimitingInterface) {
+func (h *enqueueRequestsForNodeEvent) Generic(ctx context.Context, e event.GenericEvent, queue workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 	// nothing to do here
 }
 
 // enqueueImpactedTargetGroupBindings will enqueue all impacted TargetGroupBindings for node events.
-func (h *enqueueRequestsForNodeEvent) enqueueImpactedTargetGroupBindings(queue workqueue.RateLimitingInterface, nodeOld *corev1.Node, nodeNew *corev1.Node) {
+func (h *enqueueRequestsForNodeEvent) enqueueImpactedTargetGroupBindings(queue workqueue.TypedRateLimitingInterface[reconcile.Request], nodeOld *corev1.Node, nodeNew *corev1.Node) {
 	var nodeKey types.NamespacedName
 	nodeOldSuitableAsTrafficProxy := false
 	nodeNewSuitableAsTrafficProxy := false

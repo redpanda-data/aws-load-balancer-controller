@@ -17,16 +17,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
-func Test_validatingHandler_InjectDecoder(t *testing.T) {
-	h := validatingHandler{
-		decoder: nil,
-	}
-	decoder := &admission.Decoder{}
-	h.InjectDecoder(decoder)
-
-	assert.Equal(t, decoder, h.decoder)
-}
-
 func Test_validatingHandler_Handle(t *testing.T) {
 	schema := runtime.NewScheme()
 	clientgoscheme.AddToScheme(schema)
@@ -67,7 +57,7 @@ func Test_validatingHandler_Handle(t *testing.T) {
 		validatorValidateCreate func(ctx context.Context, obj runtime.Object) error
 		validatorValidateUpdate func(ctx context.Context, obj runtime.Object, oldObj runtime.Object) error
 		validatorValidateDelete func(ctx context.Context, obj runtime.Object) error
-		decoder                 *admission.Decoder
+		decoder                 admission.Decoder
 	}
 	type args struct {
 		req admission.Request

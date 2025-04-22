@@ -19,16 +19,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
-func Test_mutatingHandler_InjectDecoder(t *testing.T) {
-	h := mutatingHandler{
-		decoder: nil,
-	}
-	decoder := &admission.Decoder{}
-	h.InjectDecoder(decoder)
-
-	assert.Equal(t, decoder, h.decoder)
-}
-
 func Test_mutatingHandler_Handle(t *testing.T) {
 	schema := runtime.NewScheme()
 	clientgoscheme.AddToScheme(schema)
@@ -69,7 +59,7 @@ func Test_mutatingHandler_Handle(t *testing.T) {
 		mutatorPrototype    func(req admission.Request) (runtime.Object, error)
 		mutatorMutateCreate func(ctx context.Context, obj runtime.Object) (runtime.Object, error)
 		mutatorMutateUpdate func(ctx context.Context, obj runtime.Object, oldObj runtime.Object) (runtime.Object, error)
-		decoder             *admission.Decoder
+		decoder             admission.Decoder
 	}
 	type args struct {
 		req admission.Request

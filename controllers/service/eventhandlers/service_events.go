@@ -33,7 +33,7 @@ type enqueueRequestsForServiceEvent struct {
 	logger        logr.Logger
 }
 
-func (h *enqueueRequestsForServiceEvent) Create(ctx context.Context, e event.CreateEvent, queue workqueue.RateLimitingInterface) {
+func (h *enqueueRequestsForServiceEvent) Create(ctx context.Context, e event.CreateEvent, queue workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 	o, ok := e.Object.(*corev1.Service)
 	if !ok {
 		return
@@ -41,7 +41,7 @@ func (h *enqueueRequestsForServiceEvent) Create(ctx context.Context, e event.Cre
 	h.enqueueManagedService(queue, o)
 }
 
-func (h *enqueueRequestsForServiceEvent) Update(ctx context.Context, e event.UpdateEvent, queue workqueue.RateLimitingInterface) {
+func (h *enqueueRequestsForServiceEvent) Update(ctx context.Context, e event.UpdateEvent, queue workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 	oldSvc, ok := e.ObjectOld.(*corev1.Service)
 	if !ok {
 		return
@@ -59,16 +59,16 @@ func (h *enqueueRequestsForServiceEvent) Update(ctx context.Context, e event.Upd
 	h.enqueueManagedService(queue, newSvc)
 }
 
-func (h *enqueueRequestsForServiceEvent) Delete(ctx context.Context, e event.DeleteEvent, queue workqueue.RateLimitingInterface) {
+func (h *enqueueRequestsForServiceEvent) Delete(ctx context.Context, e event.DeleteEvent, queue workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 	// We attach a finalizer during reconcile, and handle the user triggered delete action during the update event.
 	// In case of delete, there will first be an update event with nonzero deletionTimestamp set on the object. Since
 	// deletion is already taken care of during update event, we will ignore this event.
 }
 
-func (h *enqueueRequestsForServiceEvent) Generic(ctx context.Context, e event.GenericEvent, queue workqueue.RateLimitingInterface) {
+func (h *enqueueRequestsForServiceEvent) Generic(ctx context.Context, e event.GenericEvent, queue workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 }
 
-func (h *enqueueRequestsForServiceEvent) enqueueManagedService(queue workqueue.RateLimitingInterface, service *corev1.Service) {
+func (h *enqueueRequestsForServiceEvent) enqueueManagedService(queue workqueue.TypedRateLimitingInterface[reconcile.Request], service *corev1.Service) {
 	// Check if the svc needs to be handled
 	if !h.serviceUtils.IsServicePendingFinalization(service) && !h.serviceUtils.IsServiceSupported(service) {
 		return

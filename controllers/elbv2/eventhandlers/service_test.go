@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
 	"github.com/go-logr/logr"
 	"github.com/golang/mock/gomock"
 	"github.com/google/go-cmp/cmp"
@@ -16,9 +18,9 @@ import (
 	elbv2api "sigs.k8s.io/aws-load-balancer-controller/apis/elbv2/v1beta1"
 	mock_client "sigs.k8s.io/aws-load-balancer-controller/mocks/controller-runtime/client"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/testutils"
-	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllertest"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 func Test_enqueueRequestsForServiceEvent_enqueueImpactedTargetGroupBindings(t *testing.T) {
@@ -40,7 +42,7 @@ func Test_enqueueRequestsForServiceEvent_enqueueImpactedTargetGroupBindings(t *t
 		name         string
 		fields       fields
 		args         args
-		wantRequests []ctrl.Request
+		wantRequests []reconcile.Request
 	}{
 		{
 			name: "service event should enqueue impacted instance TargetType TGBs",
@@ -101,7 +103,7 @@ func Test_enqueueRequestsForServiceEvent_enqueueImpactedTargetGroupBindings(t *t
 					},
 				},
 			},
-			wantRequests: []ctrl.Request{
+			wantRequests: []reconcile.Request{
 				{
 					NamespacedName: types.NamespacedName{Namespace: "awesome-ns", Name: "tgb-1"},
 				},
@@ -160,7 +162,7 @@ func Test_enqueueRequestsForServiceEvent_enqueueImpactedTargetGroupBindings(t *t
 					},
 				},
 			},
-			wantRequests: []ctrl.Request{
+			wantRequests: []reconcile.Request{
 				{
 					NamespacedName: types.NamespacedName{Namespace: "awesome-ns", Name: "tgb-1"},
 				},
@@ -190,11 +192,11 @@ func Test_enqueueRequestsForServiceEvent_enqueueImpactedTargetGroupBindings(t *t
 
 			h := &enqueueRequestsForServiceEvent{
 				k8sClient: k8sClient,
-				logger:    logr.Discard(),
+				logger:    logr.New(&log.NullLogSink{}),
 			}
-			queue := controllertest.Queue{Interface: workqueue.New()}
-			h.enqueueImpactedTargetGroupBindings(&queue, tt.args.svc)
-			gotRequests := testutils.ExtractCTRLRequestsFromQueue(&queue)
+			queue := &controllertest.TypedQueue[reconcile.Request]{TypedInterface: workqueue.NewTyped[reconcile.Request]()}
+			h.enqueueImpactedTargetGroupBindings(context.Background(), queue, tt.args.svc)
+			gotRequests := testutils.ExtractCTRLRequestsFromQueue(queue)
 			assert.True(t, cmp.Equal(tt.wantRequests, gotRequests),
 				"diff", cmp.Diff(tt.wantRequests, gotRequests))
 		})

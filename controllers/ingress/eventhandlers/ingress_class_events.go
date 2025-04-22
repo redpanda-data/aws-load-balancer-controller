@@ -3,6 +3,8 @@ package eventhandlers
 import (
 	"context"
 
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
 	"github.com/go-logr/logr"
 	networking "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -16,8 +18,8 @@ import (
 )
 
 // NewEnqueueRequestsForIngressClassEvent constructs new enqueueRequestsForIngressClassEvent.
-func NewEnqueueRequestsForIngressClassEvent(ingEventChan chan<- event.GenericEvent,
-	k8sClient client.Client, eventRecorder record.EventRecorder, logger logr.Logger) *enqueueRequestsForIngressClassEvent {
+func NewEnqueueRequestsForIngressClassEvent(ingEventChan chan<- event.TypedGenericEvent[*networking.Ingress],
+	k8sClient client.Client, eventRecorder record.EventRecorder, logger logr.Logger) handler.TypedEventHandler[*networking.IngressClass, reconcile.Request] {
 	return &enqueueRequestsForIngressClassEvent{
 		ingEventChan:  ingEventChan,
 		k8sClient:     k8sClient,
@@ -26,32 +28,24 @@ func NewEnqueueRequestsForIngressClassEvent(ingEventChan chan<- event.GenericEve
 	}
 }
 
-var _ handler.EventHandler = (*enqueueRequestsForIngressClassEvent)(nil)
+var _ handler.TypedEventHandler[*networking.IngressClass, reconcile.Request] = (*enqueueRequestsForIngressClassEvent)(nil)
 
 type enqueueRequestsForIngressClassEvent struct {
-	ingEventChan  chan<- event.GenericEvent
+	ingEventChan  chan<- event.TypedGenericEvent[*networking.Ingress]
 	k8sClient     client.Client
 	eventRecorder record.EventRecorder
 	logger        logr.Logger
 }
 
-func (h *enqueueRequestsForIngressClassEvent) Create(ctx context.Context, e event.CreateEvent, _ workqueue.RateLimitingInterface) {
-	ingClassNew, ok := e.Object.(*networking.IngressClass)
-	if !ok {
-		return
-	}
+func (h *enqueueRequestsForIngressClassEvent) Create(ctx context.Context, e event.TypedCreateEvent[*networking.IngressClass], _ workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+	ingClassNew := e.Object
 	h.enqueueImpactedIngresses(ingClassNew)
 }
 
-func (h *enqueueRequestsForIngressClassEvent) Update(ctx context.Context, e event.UpdateEvent, _ workqueue.RateLimitingInterface) {
-	ingClassOld, ok := e.ObjectOld.(*networking.IngressClass)
-	if !ok {
-		return
-	}
-	ingClassNew, ok := e.ObjectNew.(*networking.IngressClass)
-	if !ok {
-		return
-	}
+func (h *enqueueRequestsForIngressClassEvent) Update(ctx context.Context, e event.TypedUpdateEvent[*networking.IngressClass], _ workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+	ingClassOld := e.ObjectOld
+	ingClassNew := e.ObjectNew
+
 	// we only care below update event:
 	//	2. IngressClass spec updates
 	//	3. IngressClass deletions
@@ -63,19 +57,13 @@ func (h *enqueueRequestsForIngressClassEvent) Update(ctx context.Context, e even
 	h.enqueueImpactedIngresses(ingClassNew)
 }
 
-func (h *enqueueRequestsForIngressClassEvent) Delete(ctx context.Context, e event.DeleteEvent, _ workqueue.RateLimitingInterface) {
-	ingClassOld, ok := e.Object.(*networking.IngressClass)
-	if !ok {
-		return
-	}
+func (h *enqueueRequestsForIngressClassEvent) Delete(ctx context.Context, e event.TypedDeleteEvent[*networking.IngressClass], _ workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+	ingClassOld := e.Object
 	h.enqueueImpactedIngresses(ingClassOld)
 }
 
-func (h *enqueueRequestsForIngressClassEvent) Generic(ctx context.Context, e event.GenericEvent, _ workqueue.RateLimitingInterface) {
-	ingClass, ok := e.Object.(*networking.IngressClass)
-	if !ok {
-		return
-	}
+func (h *enqueueRequestsForIngressClassEvent) Generic(ctx context.Context, e event.TypedGenericEvent[*networking.IngressClass], _ workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+	ingClass := e.Object
 	h.enqueueImpactedIngresses(ingClass)
 }
 
@@ -93,7 +81,7 @@ func (h *enqueueRequestsForIngressClassEvent) enqueueImpactedIngresses(ingClass 
 		h.logger.V(1).Info("enqueue ingress for ingressClass event",
 			"ingressClass", ingClass.GetName(),
 			"ingress", k8s.NamespacedName(ing))
-		h.ingEventChan <- event.GenericEvent{
+		h.ingEventChan <- event.TypedGenericEvent[*networking.Ingress]{
 			Object: ing,
 		}
 	}

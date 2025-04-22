@@ -33,6 +33,7 @@ import (
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/runtime"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/targetgroupbinding"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/go-logr/logr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -171,7 +172,7 @@ func (r *targetGroupBindingReconciler) SetupWithManager(ctx context.Context, mgr
 			Watches(&corev1.Node{}, nodeEventsHandler).
 			WithOptions(controller.Options{
 				MaxConcurrentReconciles: r.maxConcurrentReconciles,
-				RateLimiter:             workqueue.NewItemExponentialFailureRateLimiter(5*time.Millisecond, r.maxExponentialBackoffDelay)}).
+				RateLimiter:             workqueue.NewTypedItemExponentialFailureRateLimiter[reconcile.Request](5*time.Millisecond, r.maxExponentialBackoffDelay)}).
 			Complete(r)
 	} else {
 		epsEventsHandler := eventhandlers.NewEnqueueRequestsForEndpointsEvent(r.k8sClient,
@@ -184,7 +185,7 @@ func (r *targetGroupBindingReconciler) SetupWithManager(ctx context.Context, mgr
 			Watches(&corev1.Node{}, nodeEventsHandler).
 			WithOptions(controller.Options{
 				MaxConcurrentReconciles: r.maxConcurrentReconciles,
-				RateLimiter:             workqueue.NewItemExponentialFailureRateLimiter(5*time.Millisecond, r.maxExponentialBackoffDelay)}).
+				RateLimiter:             workqueue.NewTypedItemExponentialFailureRateLimiter[reconcile.Request](5*time.Millisecond, r.maxExponentialBackoffDelay)}).
 			Complete(r)
 	}
 }

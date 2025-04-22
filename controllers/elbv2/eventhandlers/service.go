@@ -31,46 +31,34 @@ type enqueueRequestsForServiceEvent struct {
 }
 
 // Create is called in response to an create event - e.g. Pod Creation.
-func (h *enqueueRequestsForServiceEvent) Create(ctx context.Context, e event.CreateEvent, queue workqueue.RateLimitingInterface) {
-	svcNew, ok := e.Object.(*corev1.Service)
-	if !ok {
-		return
-	}
-	h.enqueueImpactedTargetGroupBindings(queue, svcNew)
+func (h *enqueueRequestsForServiceEvent) Create(ctx context.Context, e event.CreateEvent, queue workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+	svcNew := e.Object.(*corev1.Service)
+	h.enqueueImpactedTargetGroupBindings(ctx, queue, svcNew)
 }
 
 // Update is called in response to an update event -  e.g. Pod Updated.
-func (h *enqueueRequestsForServiceEvent) Update(ctx context.Context, e event.UpdateEvent, queue workqueue.RateLimitingInterface) {
-	svcOld, ok := e.ObjectOld.(*corev1.Service)
-	if !ok {
-		return
-	}
-	svcNew, ok := e.ObjectNew.(*corev1.Service)
-	if !ok {
-		return
-	}
+func (h *enqueueRequestsForServiceEvent) Update(ctx context.Context, e event.UpdateEvent, queue workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+	svcOld := e.ObjectOld.(*corev1.Service)
+	svcNew := e.ObjectNew.(*corev1.Service)
 	if !equality.Semantic.DeepEqual(svcOld.Spec.Ports, svcNew.Spec.Ports) {
-		h.enqueueImpactedTargetGroupBindings(queue, svcNew)
+		h.enqueueImpactedTargetGroupBindings(ctx, queue, svcNew)
 	}
 }
 
 // Delete is called in response to a delete event - e.g. Pod Deleted.
-func (h *enqueueRequestsForServiceEvent) Delete(ctx context.Context, e event.DeleteEvent, queue workqueue.RateLimitingInterface) {
-	svcOld, ok := e.Object.(*corev1.Service)
-	if !ok {
-		return
-	}
-	h.enqueueImpactedTargetGroupBindings(queue, svcOld)
+func (h *enqueueRequestsForServiceEvent) Delete(ctx context.Context, e event.DeleteEvent, queue workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+	svcOld := e.Object.(*corev1.Service)
+	h.enqueueImpactedTargetGroupBindings(ctx, queue, svcOld)
 }
 
 // Generic is called in response to an event of an unknown type or a synthetic event triggered as a cron or
 // external trigger request - e.g. reconcile AutoScaling, or a WebHook.
-func (h *enqueueRequestsForServiceEvent) Generic(ctx context.Context, e event.GenericEvent, queue workqueue.RateLimitingInterface) {
+func (h *enqueueRequestsForServiceEvent) Generic(context.Context, event.GenericEvent, workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 	// nothing to do here
 }
 
 // enqueueImpactedEndpointBindings will enqueue all impacted TargetGroupBindings for service events.
-func (h *enqueueRequestsForServiceEvent) enqueueImpactedTargetGroupBindings(queue workqueue.RateLimitingInterface, svc *corev1.Service) {
+func (h *enqueueRequestsForServiceEvent) enqueueImpactedTargetGroupBindings(ctx context.Context, queue workqueue.TypedRateLimitingInterface[reconcile.Request], svc *corev1.Service) {
 	tgbList := &elbv2api.TargetGroupBindingList{}
 	if err := h.k8sClient.List(context.Background(), tgbList,
 		client.InNamespace(svc.Namespace),
