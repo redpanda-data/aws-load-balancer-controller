@@ -4021,7 +4021,7 @@ func Test_defaultModelBuilder_Build(t *testing.T) {
 							IngClassConfig: ClassConfiguration{
 								IngClassParams: &v1beta1.IngressClassParams{
 									Spec: v1beta1.IngressClassParamsSpec{
-										PrefixListsIDs: []string{
+										PrefixListIDs: []string{
 											"pl-11111111",
 											"pl-22222222",
 										},
