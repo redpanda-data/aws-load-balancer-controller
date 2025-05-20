@@ -105,6 +105,7 @@ type gatewayControllerConfig struct {
 	sgResolver          networking.SecurityGroupResolver
 	metricsCollector    lbcmetrics.MetricCollector
 	reconcileCounters   *metricsutil.ReconcileCounters
+	routeReconciler     routeutils.RouteReconciler
 }
 
 func main() {
@@ -215,6 +216,13 @@ func main() {
 
 	// Initialize common gateway configuration
 	if controllerCFG.FeatureGates.Enabled(config.NLBGatewayAPI) || controllerCFG.FeatureGates.Enabled(config.ALBGatewayAPI) {
+
+		// create deferred route reconciler
+		delayingQueue := workqueue.NewDelayingQueueWithConfig(workqueue.DelayingQueueConfig{
+			Name: "gateway-route-status-update-reconciler",
+		})
+		routeReconciler := gateway.NewRouteReconciler(delayingQueue, mgr.GetClient(), ctrl.Log.WithName("routeReconciler"))
+
 		gwControllerConfig := &gatewayControllerConfig{
 			cloud:               cloud,
 			k8sClient:           mgr.GetClient(),
@@ -229,6 +237,7 @@ func main() {
 			sgResolver:          sgResolver,
 			metricsCollector:    lbcMetricsCollector,
 			reconcileCounters:   reconcileCounters,
+			routeReconciler:     routeReconciler,
 		}
 
 		enabledControllers := sets.Set[string]{}
@@ -278,6 +287,11 @@ func main() {
 			setupLog.Error(err, "Unable to set up Gateway Class Watches")
 			os.Exit(1)
 		}
+
+		go func() {
+			setupLog.Info("starting gateway route reconciler")
+			routeReconciler.Run()
+		}()
 
 	}
 	// Add liveness probe
@@ -364,6 +378,7 @@ func setupGatewayController(ctx context.Context, mgr ctrl.Manager, cfg *gatewayC
 			logger,
 			cfg.metricsCollector,
 			cfg.reconcileCounters,
+			cfg.routeReconciler,
 		)
 	case gateway_constants.ALBGatewayController:
 		reconciler = gateway.NewALBGatewayReconciler(
@@ -383,6 +398,7 @@ func setupGatewayController(ctx context.Context, mgr ctrl.Manager, cfg *gatewayC
 			logger,
 			cfg.metricsCollector,
 			cfg.reconcileCounters,
+			cfg.routeReconciler,
 		)
 	default:
 		return fmt.Errorf("unknown controller type: %s", controllerType)
