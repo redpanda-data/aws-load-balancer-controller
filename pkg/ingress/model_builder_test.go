@@ -311,6 +311,7 @@ const baseStackJSON = `
                             "targetGroupARN":{
                                 "$ref":"#/resources/AWS::ElasticLoadBalancingV2::TargetGroup/ns-1/ing-1-svc-1:http/status/targetGroupARN"
                             },
+                            "targetGroupProtocol":"HTTP",
                             "targetType":"instance",
                             "vpcID": "vpc-dummy",
                             "ipAddressType":"ipv4",
@@ -353,6 +354,7 @@ const baseStackJSON = `
                             "targetGroupARN":{
                                 "$ref":"#/resources/AWS::ElasticLoadBalancingV2::TargetGroup/ns-1/ing-1-svc-2:http/status/targetGroupARN"
                             },
+							"targetGroupProtocol":"HTTP",
                             "targetType":"instance",
                             "ipAddressType":"ipv4",
                             "vpcID": "vpc-dummy",
@@ -395,6 +397,7 @@ const baseStackJSON = `
                             "targetGroupARN":{
                                 "$ref":"#/resources/AWS::ElasticLoadBalancingV2::TargetGroup/ns-1/ing-1-svc-3:https/status/targetGroupARN"
                             },
+							"targetGroupProtocol":"HTTPS",
                             "targetType":"ip",
                             "vpcID": "vpc-dummy",
                             "ipAddressType":"ipv4",
@@ -1769,6 +1772,7 @@ func Test_defaultModelBuilder_Build(t *testing.T) {
 							"targetGroupARN": {
 								"$ref": "#/resources/AWS::ElasticLoadBalancingV2::TargetGroup/ns-1/ing-1-svc-1:80/status/targetGroupARN"
 							},
+							"targetGroupProtocol":"HTTP",
 							"targetType": "instance"
 						}
 					}
@@ -2611,6 +2615,7 @@ func Test_defaultModelBuilder_Build(t *testing.T) {
                             "targetGroupARN":{
                                 "$ref":"#/resources/AWS::ElasticLoadBalancingV2::TargetGroup/ns-1/ing-1-svc-1:http/status/targetGroupARN"
                             },
+							"targetGroupProtocol":"HTTP",
                             "targetType":"ip",
                             "vpcID": "vpc-dummy",
                             "ipAddressType":"ipv4",
@@ -2653,6 +2658,7 @@ func Test_defaultModelBuilder_Build(t *testing.T) {
                             "targetGroupARN":{
                                 "$ref":"#/resources/AWS::ElasticLoadBalancingV2::TargetGroup/ns-1/ing-1-svc-2:http/status/targetGroupARN"
                             },
+                            "targetGroupProtocol":"HTTP",
                             "targetType":"ip",
                             "ipAddressType":"ipv4",
                             "vpcID": "vpc-dummy",
@@ -2695,6 +2701,7 @@ func Test_defaultModelBuilder_Build(t *testing.T) {
                             "targetGroupARN":{
                                 "$ref":"#/resources/AWS::ElasticLoadBalancingV2::TargetGroup/ns-1/ing-1-svc-3:https/status/targetGroupARN"
                             },
+							"targetGroupProtocol":"HTTPS",
                             "targetType":"ip",
                             "vpcID": "vpc-dummy",
                             "ipAddressType":"ipv4",
@@ -3328,6 +3335,7 @@ func Test_defaultModelBuilder_Build(t *testing.T) {
 							"targetGroupARN": {
 								"$ref": "#/resources/AWS::ElasticLoadBalancingV2::TargetGroup/ns-1/ing-1-svc-ipv6:https/status/targetGroupARN"
 							},
+							"targetGroupProtocol":"HTTP",
 							"targetType": "ip"
 						}
 					}
@@ -3597,6 +3605,7 @@ func Test_defaultModelBuilder_Build(t *testing.T) {
 							"targetGroupARN": {
 								"$ref": "#/resources/AWS::ElasticLoadBalancingV2::TargetGroup/ns-1/ing-1-svc-named-targetport:https/status/targetGroupARN"
 							},
+ 							"targetGroupProtocol":"HTTP",
 							"targetType": "ip"
 						}
 					}
@@ -3757,6 +3766,7 @@ func Test_defaultModelBuilder_Build(t *testing.T) {
 							"targetGroupARN": {
 								"$ref": "#/resources/AWS::ElasticLoadBalancingV2::TargetGroup/ns-1/ing-1-svc-named-targetport:https/status/targetGroupARN"
 							},
+ 							"targetGroupProtocol":"HTTP",
 							"targetType": "ip"
 						}
 					}
