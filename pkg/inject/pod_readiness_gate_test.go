@@ -120,7 +120,7 @@ func Test_PodReadinessGate_Mutate(t *testing.T) {
 		tgbList   []*elbv2api.TargetGroupBinding
 		pod       *corev1.Pod
 		want      []corev1.PodReadinessGate
-		config    Config
+		config    PodReadinessGateConfig
 		wantError bool
 	}{
 		{
@@ -142,7 +142,7 @@ func Test_PodReadinessGate_Mutate(t *testing.T) {
 					ConditionType: "target-health.elbv2.k8s.aws/tgb-1-l6qw1",
 				},
 			},
-			config: Config{
+			config: PodReadinessGateConfig{
 				EnablePodReadinessGateInject: true,
 			},
 		},
@@ -161,7 +161,7 @@ func Test_PodReadinessGate_Mutate(t *testing.T) {
 				},
 			},
 			want: nil,
-			config: Config{
+			config: PodReadinessGateConfig{
 				EnablePodReadinessGateInject: true,
 			},
 		},
@@ -187,7 +187,7 @@ func Test_PodReadinessGate_Mutate(t *testing.T) {
 					ConditionType: "target-health.elbv2.k8s.aws/tgb-2-l6qw2",
 				},
 			},
-			config: Config{
+			config: PodReadinessGateConfig{
 				EnablePodReadinessGateInject: true,
 			},
 		},
@@ -204,7 +204,7 @@ func Test_PodReadinessGate_Mutate(t *testing.T) {
 				},
 			},
 			want: []corev1.PodReadinessGate(nil),
-			config: Config{
+			config: PodReadinessGateConfig{
 				EnablePodReadinessGateInject: true,
 			},
 		},
@@ -232,7 +232,7 @@ func Test_PodReadinessGate_Mutate(t *testing.T) {
 					ConditionType: "leave-unmodified",
 				},
 			},
-			config: Config{
+			config: PodReadinessGateConfig{
 				EnablePodReadinessGateInject: true,
 			},
 		},
@@ -249,7 +249,7 @@ func Test_PodReadinessGate_Mutate(t *testing.T) {
 				},
 			},
 			want: []corev1.PodReadinessGate(nil),
-			config: Config{
+			config: PodReadinessGateConfig{
 				EnablePodReadinessGateInject: true,
 			},
 		},
@@ -300,7 +300,7 @@ func Test_PodReadinessGate_Mutate(t *testing.T) {
 					ConditionType: "target-health.elbv2.k8s.aws/tgb-2-l6qw2",
 				},
 			},
-			config: Config{
+			config: PodReadinessGateConfig{
 				EnablePodReadinessGateInject: true,
 			},
 		},
