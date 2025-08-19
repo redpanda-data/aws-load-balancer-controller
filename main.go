@@ -110,6 +110,7 @@ type gatewayControllerConfig struct {
 	reconcileCounters       *metricsutil.ReconcileCounters
 	serviceReferenceCounter referencecounter.ServiceReferenceCounter
 	networkingManager       networking.NetworkingManager
+	targetGroupCollector    awsmetrics.TargetGroupCollector
 }
 
 func main() {
@@ -155,6 +156,7 @@ func main() {
 
 	reconcileCounters := metricsutil.NewReconcileCounters()
 	lbcMetricsCollector := lbcmetrics.NewCollector(metrics.Registry, mgr, reconcileCounters, ctrl.Log.WithName("controller_metrics"))
+	targetGroupCollector := awsmetrics.NewTargetGroupCollector(metrics.Registry)
 
 	clientSet, err := kubernetes.NewForConfig(mgr.GetConfig())
 	if err != nil {
@@ -193,10 +195,12 @@ func main() {
 	elbv2TaggingManager := elbv2deploy.NewDefaultTaggingManager(cloud.ELBV2(), cloud.VpcID(), controllerCFG.FeatureGates, cloud.RGT(), ctrl.Log)
 	ingGroupReconciler := ingress.NewGroupReconciler(cloud, mgr.GetClient(), mgr.GetEventRecorderFor("ingress"),
 		finalizerManager, sgManager, networkingManager, sgReconciler, subnetResolver, elbv2TaggingManager,
-		controllerCFG, backendSGProvider, sgResolver, ctrl.Log.WithName("controllers").WithName("ingress"), lbcMetricsCollector, reconcileCounters)
+		controllerCFG, backendSGProvider, sgResolver, ctrl.Log.WithName("controllers").WithName("ingress"), lbcMetricsCollector, reconcileCounters,
+		targetGroupCollector)
 	svcReconciler := service.NewServiceReconciler(cloud, mgr.GetClient(), mgr.GetEventRecorderFor("service"),
 		finalizerManager, networkingManager, sgManager, sgReconciler, subnetResolver, vpcInfoProvider, elbv2TaggingManager,
-		controllerCFG, backendSGProvider, sgResolver, ctrl.Log.WithName("controllers").WithName("service"), lbcMetricsCollector, reconcileCounters)
+		controllerCFG, backendSGProvider, sgResolver, ctrl.Log.WithName("controllers").WithName("service"), lbcMetricsCollector, reconcileCounters,
+		targetGroupCollector)
 
 	delayingQueue := workqueue.NewDelayingQueueWithConfig(workqueue.DelayingQueueConfig{
 		Name: "delayed-target-group-binding",
@@ -251,6 +255,7 @@ func main() {
 			reconcileCounters:       reconcileCounters,
 			networkingManager:       networkingManager,
 			serviceReferenceCounter: serviceReferenceCounter,
+			targetGroupCollector:    targetGroupCollector,
 		}
 
 		enabledControllers := sets.Set[string]{}
@@ -455,6 +460,7 @@ func setupGatewayController(ctx context.Context, mgr ctrl.Manager, cfg *gatewayC
 			logger,
 			cfg.metricsCollector,
 			cfg.reconcileCounters,
+			cfg.targetGroupCollector,
 		)
 	case gateway_constants.ALBGatewayController:
 		reconciler = gateway.NewALBGatewayReconciler(
@@ -476,6 +482,7 @@ func setupGatewayController(ctx context.Context, mgr ctrl.Manager, cfg *gatewayC
 			logger,
 			cfg.metricsCollector,
 			cfg.reconcileCounters,
+			cfg.targetGroupCollector,
 		)
 	default:
 		return fmt.Errorf("unknown controller type: %s", controllerType)
