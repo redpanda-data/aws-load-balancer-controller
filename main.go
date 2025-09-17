@@ -145,9 +145,11 @@ func main() {
 		setupLog.Error(err, "unable to build REST config")
 		os.Exit(1)
 	}
-	rtOpts := config.BuildRuntimeOptions(controllerCFG.RuntimeConfig, scheme)
-	rtOpts.WebhookServer = webhook.NewServer(config.ConfigureWebhookServer(controllerCFG.RuntimeConfig))
-
+	rtOpts, err := config.BuildRuntimeOptions(controllerCFG.RuntimeConfig, scheme)
+	if err != nil {
+		setupLog.Error(err, "unable to build runtime options")
+		os.Exit(1)
+	}
 	mgr, err := ctrl.NewManager(restCFG, rtOpts)
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
