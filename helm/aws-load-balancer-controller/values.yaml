@@ -376,6 +376,7 @@ controllerConfig:
   # NLBHealthCheckAdvancedConfig: true
   # ALBSingleSubnet: false
   # LBCapacityReservation: true
+  # AGAController: true
   # EnhancedDefaultBehavior: false
 
 certDiscovery:
