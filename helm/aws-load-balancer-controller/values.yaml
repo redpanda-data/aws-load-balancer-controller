@@ -386,7 +386,7 @@ controllerConfig:
   # NLBHealthCheckAdvancedConfig: true
   # ALBSingleSubnet: false
   # LBCapacityReservation: true
-  # AGAController: true
+  # AGAController: false
   # EnhancedDefaultBehavior: false
   # EnableDefaultTagsLowPriority: false
 
