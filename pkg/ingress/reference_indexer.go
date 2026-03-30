@@ -3,7 +3,7 @@ package ingress
 import (
 	"context"
 
-	awssdk "github.com/aws/aws-sdk-go/aws"
+	awssdk "github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/go-logr/logr"
 	networking "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -70,8 +70,7 @@ func (i *defaultReferenceIndexer) BuildServiceRefIndexes(ctx context.Context, in
 	for _, backend := range backends {
 		enhancedBackend, err := i.enhancedBackendBuilder.Build(ctx, ing, backend,
 			WithLoadBackendServices(false, nil),
-			WithLoadAuthConfig(false),
-		)
+			WithLoadAuthConfig(false))
 		if err != nil {
 			i.logger.Error(err, "failed to build Ingress indexes",
 				"indexKey", IndexKeyServiceRefName)
@@ -98,12 +97,12 @@ func (i *defaultReferenceIndexer) BuildIngressClassRefIndexes(_ context.Context,
 		return nil
 	}
 
-	ingClassName := awssdk.StringValue(ing.Spec.IngressClassName)
+	ingClassName := awssdk.ToString(ing.Spec.IngressClassName)
 	return []string{ingClassName}
 }
 
 func (i *defaultReferenceIndexer) BuildIngressClassParamsRefIndexes(_ context.Context, ingClass *networking.IngressClass) []string {
-	if ingClass.Spec.Controller != ingressClassControllerALB || ingClass.Spec.Parameters == nil {
+	if ingClass.Spec.Controller != IngressClassControllerALB || ingClass.Spec.Parameters == nil {
 		return nil
 	}
 	if ingClass.Spec.Parameters.APIGroup == nil ||

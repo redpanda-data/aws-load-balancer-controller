@@ -21,25 +21,31 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
+	discv1 "k8s.io/api/discovery/v1"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
-	discv1 "k8s.io/api/discovery/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
 	"sigs.k8s.io/aws-load-balancer-controller/controllers/elbv2/eventhandlers"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/config"
+	ctrlerrors "sigs.k8s.io/aws-load-balancer-controller/pkg/error"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/k8s"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/runtime"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/targetgroupbinding"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/go-logr/logr"
+	lbcmetrics "sigs.k8s.io/aws-load-balancer-controller/pkg/metrics/lbc"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	elbv2api "sigs.k8s.io/aws-load-balancer-controller/apis/elbv2/v1beta1"
+	metricsutil "sigs.k8s.io/aws-load-balancer-controller/pkg/metrics/util"
 )
 
 const (
@@ -49,15 +55,18 @@ const (
 
 // NewTargetGroupBindingReconciler constructs new targetGroupBindingReconciler
 func NewTargetGroupBindingReconciler(k8sClient client.Client, eventRecorder record.EventRecorder, finalizerManager k8s.FinalizerManager,
-	tgbResourceManager targetgroupbinding.ResourceManager, config config.ControllerConfig,
-	logger logr.Logger) *targetGroupBindingReconciler {
+	tgbResourceManager targetgroupbinding.ResourceManager, config config.ControllerConfig, deferredTargetGroupBindingReconciler DeferredTargetGroupBindingReconciler,
+	logger logr.Logger, metricsCollector lbcmetrics.MetricCollector, reconcileCounters *metricsutil.ReconcileCounters) *targetGroupBindingReconciler {
 
 	return &targetGroupBindingReconciler{
-		k8sClient:          k8sClient,
-		eventRecorder:      eventRecorder,
-		finalizerManager:   finalizerManager,
-		tgbResourceManager: tgbResourceManager,
-		logger:             logger,
+		k8sClient:                            k8sClient,
+		eventRecorder:                        eventRecorder,
+		finalizerManager:                     finalizerManager,
+		tgbResourceManager:                   tgbResourceManager,
+		deferredTargetGroupBindingReconciler: deferredTargetGroupBindingReconciler,
+		logger:                               logger,
+		metricsCollector:                     metricsCollector,
+		reconcileCounters:                    reconcileCounters,
 
 		maxConcurrentReconciles:    config.TargetGroupBindingMaxConcurrentReconciles,
 		maxExponentialBackoffDelay: config.TargetGroupBindingMaxExponentialBackoffDelay,
@@ -67,11 +76,14 @@ func NewTargetGroupBindingReconciler(k8sClient client.Client, eventRecorder reco
 
 // targetGroupBindingReconciler reconciles a TargetGroupBinding object
 type targetGroupBindingReconciler struct {
-	k8sClient          client.Client
-	eventRecorder      record.EventRecorder
-	finalizerManager   k8s.FinalizerManager
-	tgbResourceManager targetgroupbinding.ResourceManager
-	logger             logr.Logger
+	k8sClient                            client.Client
+	eventRecorder                        record.EventRecorder
+	finalizerManager                     k8s.FinalizerManager
+	tgbResourceManager                   targetgroupbinding.ResourceManager
+	deferredTargetGroupBindingReconciler DeferredTargetGroupBindingReconciler
+	logger                               logr.Logger
+	metricsCollector                     lbcmetrics.MetricCollector
+	reconcileCounters                    *metricsutil.ReconcileCounters
 
 	maxConcurrentReconciles    int
 	maxExponentialBackoffDelay time.Duration
@@ -85,17 +97,24 @@ type targetGroupBindingReconciler struct {
 // +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=endpoints,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;delete;create;update
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups="discovery.k8s.io",resources=endpointslices,verbs=get;list;watch
 
-func (r *targetGroupBindingReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *targetGroupBindingReconciler) Reconcile(ctx context.Context, req reconcile.Request) (ctrl.Result, error) {
+	r.reconcileCounters.IncrementTGB(req.NamespacedName)
 	r.logger.V(1).Info("Reconcile request", "name", req.Name)
 	return runtime.HandleReconcileError(r.reconcile(ctx, req), r.logger)
 }
 
-func (r *targetGroupBindingReconciler) reconcile(ctx context.Context, req ctrl.Request) error {
+func (r *targetGroupBindingReconciler) reconcile(ctx context.Context, req reconcile.Request) error {
 	tgb := &elbv2api.TargetGroupBinding{}
-	if err := r.k8sClient.Get(ctx, req.NamespacedName, tgb); err != nil {
+	var err error
+	fetchTargetGroupBindingFn := func() {
+		err = r.k8sClient.Get(ctx, req.NamespacedName, tgb)
+	}
+	r.metricsCollector.ObserveControllerReconcileLatency(controllerName, "fetch_targetGroupBinding", fetchTargetGroupBindingFn)
+	if err != nil {
 		return client.IgnoreNotFound(err)
 	}
 
@@ -106,18 +125,38 @@ func (r *targetGroupBindingReconciler) reconcile(ctx context.Context, req ctrl.R
 }
 
 func (r *targetGroupBindingReconciler) reconcileTargetGroupBinding(ctx context.Context, tgb *elbv2api.TargetGroupBinding) error {
-	if err := r.finalizerManager.AddFinalizers(ctx, tgb, targetGroupBindingFinalizer); err != nil {
+	var err error
+	finalizerFn := func() {
+		err = r.finalizerManager.AddFinalizers(ctx, tgb, targetGroupBindingFinalizer)
+	}
+	r.metricsCollector.ObserveControllerReconcileLatency(controllerName, "add_finalizers", finalizerFn)
+	if err != nil {
 		r.eventRecorder.Event(tgb, corev1.EventTypeWarning, k8s.TargetGroupBindingEventReasonFailedAddFinalizer, fmt.Sprintf("Failed add finalizer due to %v", err))
-		return err
+		return ctrlerrors.NewErrorWithMetrics(controllerName, "add_finalizers_error", err, r.metricsCollector)
 	}
 
-	if err := r.tgbResourceManager.Reconcile(ctx, tgb); err != nil {
-		return err
+	var deferred bool
+	tgbResourceFn := func() {
+		deferred, err = r.tgbResourceManager.Reconcile(ctx, tgb)
+	}
+	r.metricsCollector.ObserveControllerReconcileLatency(controllerName, "reconcile_targetgroupbinding", tgbResourceFn)
+	if err != nil {
+		return ctrlerrors.NewErrorWithMetrics(controllerName, "reconcile_targetgroupbinding_error", err, r.metricsCollector)
 	}
 
-	if err := r.updateTargetGroupBindingStatus(ctx, tgb); err != nil {
-		r.eventRecorder.Event(tgb, corev1.EventTypeWarning, k8s.TargetGroupBindingEventReasonFailedUpdateStatus, fmt.Sprintf("Failed update status due to %v", err))
-		return err
+	if deferred {
+		r.deferredTargetGroupBindingReconciler.Enqueue(tgb)
+		return nil
+	} else {
+		r.deferredTargetGroupBindingReconciler.MarkProcessed(tgb)
+	}
+
+	updateTargetGroupBindingStatusFn := func() {
+		err = r.updateTargetGroupBindingStatus(ctx, tgb)
+	}
+	r.metricsCollector.ObserveControllerReconcileLatency(controllerName, "update_status", updateTargetGroupBindingStatusFn)
+	if err != nil {
+		return ctrlerrors.NewErrorWithMetrics(controllerName, "update_status_error", err, r.metricsCollector)
 	}
 
 	r.eventRecorder.Event(tgb, corev1.EventTypeNormal, k8s.TargetGroupBindingEventReasonSuccessfullyReconciled, "Successfully reconciled")
@@ -128,6 +167,9 @@ func (r *targetGroupBindingReconciler) cleanupTargetGroupBinding(ctx context.Con
 	if k8s.HasFinalizer(tgb, targetGroupBindingFinalizer) {
 		if err := r.tgbResourceManager.Cleanup(ctx, tgb); err != nil {
 			r.eventRecorder.Event(tgb, corev1.EventTypeWarning, k8s.TargetGroupBindingEventReasonFailedCleanup, fmt.Sprintf("Failed cleanup due to %v", err))
+			if statusErr := r.updateTargetGroupBindingStatusCondition(ctx, tgb, metav1.ConditionFalse, k8s.TargetGroupBindingEventReasonFailedCleanup, err.Error()); statusErr != nil {
+				r.logger.Error(statusErr, "failed to update targetGroupBinding status condition")
+			}
 			return err
 		}
 		if err := r.finalizerManager.RemoveFinalizers(ctx, tgb, targetGroupBindingFinalizer); err != nil {
@@ -139,13 +181,62 @@ func (r *targetGroupBindingReconciler) cleanupTargetGroupBinding(ctx context.Con
 }
 
 func (r *targetGroupBindingReconciler) updateTargetGroupBindingStatus(ctx context.Context, tgb *elbv2api.TargetGroupBinding) error {
-	if aws.Int64Value(tgb.Status.ObservedGeneration) == tgb.Generation {
+	if aws.ToInt64(tgb.Status.ObservedGeneration) == tgb.Generation {
 		return nil
 	}
+
 	tgbOld := tgb.DeepCopy()
+
 	tgb.Status.ObservedGeneration = aws.Int64(tgb.Generation)
 	if err := r.k8sClient.Status().Patch(ctx, tgb, client.MergeFrom(tgbOld)); err != nil {
 		return errors.Wrapf(err, "failed to update targetGroupBinding status: %v", k8s.NamespacedName(tgb))
+	}
+
+	return nil
+}
+
+func (r *targetGroupBindingReconciler) updateTargetGroupBindingStatusCondition(ctx context.Context, tgb *elbv2api.TargetGroupBinding, status metav1.ConditionStatus, reason string, message string) error {
+	tgbOld := tgb.DeepCopy()
+
+	newCondition := metav1.Condition{
+		Type:               "Ready",
+		Status:             status,
+		LastTransitionTime: metav1.Now(),
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: tgb.Generation,
+	}
+
+	existingCondition := findCondition(tgb.Status.Conditions, newCondition.Type)
+	if existingCondition != nil &&
+		existingCondition.Status == newCondition.Status &&
+		existingCondition.Reason == newCondition.Reason &&
+		existingCondition.Message == newCondition.Message &&
+		existingCondition.ObservedGeneration == newCondition.ObservedGeneration {
+		return nil
+	}
+
+	if existingCondition == nil {
+		tgb.Status.Conditions = append(tgb.Status.Conditions, newCondition)
+	} else {
+		existingCondition.Status = newCondition.Status
+		existingCondition.Reason = newCondition.Reason
+		existingCondition.Message = newCondition.Message
+		existingCondition.ObservedGeneration = newCondition.ObservedGeneration
+		existingCondition.LastTransitionTime = newCondition.LastTransitionTime
+	}
+
+	if err := r.k8sClient.Status().Patch(ctx, tgb, client.MergeFrom(tgbOld)); err != nil {
+		return errors.Wrapf(err, "failed to update targetGroupBinding status: %v", k8s.NamespacedName(tgb))
+	}
+	return nil
+}
+
+func findCondition(conditions []metav1.Condition, conditionType string) *metav1.Condition {
+	for i := range conditions {
+		if conditions[i].Type == conditionType {
+			return &conditions[i]
+		}
 	}
 	return nil
 }
@@ -160,34 +251,29 @@ func (r *targetGroupBindingReconciler) SetupWithManager(ctx context.Context, mgr
 	nodeEventsHandler := eventhandlers.NewEnqueueRequestsForNodeEvent(r.k8sClient,
 		r.logger.WithName("eventHandlers").WithName("node"))
 
-	// Use the config flag to decide whether to use and watch an Endpoints event handler or an EndpointSlices event handler
+	var eventHandler handler.EventHandler
+	var clientObj client.Object
+
 	if r.enableEndpointSlices {
-		epSliceEventsHandler := eventhandlers.NewEnqueueRequestsForEndpointSlicesEvent(r.k8sClient,
+		clientObj = &discv1.EndpointSlice{}
+		eventHandler = eventhandlers.NewEnqueueRequestsForEndpointSlicesEvent(r.k8sClient,
 			r.logger.WithName("eventHandlers").WithName("endpointslices"))
-		return ctrl.NewControllerManagedBy(mgr).
-			For(&elbv2api.TargetGroupBinding{}).
-			Named(controllerName).
-			Watches(&corev1.Service{}, svcEventHandler).
-			Watches(&discv1.EndpointSlice{}, epSliceEventsHandler).
-			Watches(&corev1.Node{}, nodeEventsHandler).
-			WithOptions(controller.Options{
-				MaxConcurrentReconciles: r.maxConcurrentReconciles,
-				RateLimiter:             workqueue.NewTypedItemExponentialFailureRateLimiter[reconcile.Request](5*time.Millisecond, r.maxExponentialBackoffDelay)}).
-			Complete(r)
 	} else {
-		epsEventsHandler := eventhandlers.NewEnqueueRequestsForEndpointsEvent(r.k8sClient,
+		clientObj = &corev1.Endpoints{}
+		eventHandler = eventhandlers.NewEnqueueRequestsForEndpointsEvent(r.k8sClient,
 			r.logger.WithName("eventHandlers").WithName("endpoints"))
-		return ctrl.NewControllerManagedBy(mgr).
-			For(&elbv2api.TargetGroupBinding{}).
-			Named(controllerName).
-			Watches(&corev1.Service{}, svcEventHandler).
-			Watches(&corev1.Endpoints{}, epsEventsHandler).
-			Watches(&corev1.Node{}, nodeEventsHandler).
-			WithOptions(controller.Options{
-				MaxConcurrentReconciles: r.maxConcurrentReconciles,
-				RateLimiter:             workqueue.NewTypedItemExponentialFailureRateLimiter[reconcile.Request](5*time.Millisecond, r.maxExponentialBackoffDelay)}).
-			Complete(r)
 	}
+
+	return ctrl.NewControllerManagedBy(mgr).
+		For(&elbv2api.TargetGroupBinding{}).
+		Named(controllerName).
+		Watches(&corev1.Service{}, svcEventHandler).
+		Watches(clientObj, eventHandler).
+		Watches(&corev1.Node{}, nodeEventsHandler).
+		WithOptions(controller.Options{
+			MaxConcurrentReconciles: r.maxConcurrentReconciles,
+			RateLimiter:             workqueue.NewTypedItemExponentialFailureRateLimiter[reconcile.Request](5*time.Millisecond, r.maxExponentialBackoffDelay)}).
+		Complete(r)
 }
 
 func (r *targetGroupBindingReconciler) setupIndexes(ctx context.Context, fieldIndexer client.FieldIndexer) error {

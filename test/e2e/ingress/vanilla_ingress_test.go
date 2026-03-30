@@ -4,22 +4,29 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"sigs.k8s.io/aws-load-balancer-controller/pkg/shared_utils"
 	"strings"
 	"time"
 
-	awssdk "github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2"
+	elbv2types "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2/types"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	awssdk "github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/gavv/httpexpect/v2"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
 	networking "k8s.io/api/networking/v1"
 	apierrs "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/k8s"
+	elbv2model "sigs.k8s.io/aws-load-balancer-controller/pkg/model/elbv2"
 	"sigs.k8s.io/aws-load-balancer-controller/test/framework"
 	"sigs.k8s.io/aws-load-balancer-controller/test/framework/fixture"
 	"sigs.k8s.io/aws-load-balancer-controller/test/framework/manifest"
 	"sigs.k8s.io/aws-load-balancer-controller/test/framework/utils"
+	"sigs.k8s.io/aws-load-balancer-controller/test/framework/verifier"
 )
 
 var _ = Describe("vanilla ingress tests", func() {
@@ -33,13 +40,6 @@ var _ = Describe("vanilla ingress tests", func() {
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		if tf.Options.ControllerImage != "" {
-			By(fmt.Sprintf("ensure cluster installed with controller: %s", tf.Options.ControllerImage), func() {
-				err := tf.CTRLInstallationManager.UpgradeController(tf.Options.ControllerImage)
-				Expect(err).NotTo(HaveOccurred())
-				time.Sleep(60 * time.Second)
-			})
-		}
 
 		By("setup sandbox namespace", func() {
 			tf.Logger.Info("allocating namespace")
@@ -70,10 +70,55 @@ var _ = Describe("vanilla ingress tests", func() {
 	})
 
 	Context("with basic settings", func() {
-		It("[ingress-class] with IngressClass configured with 'ingress.k8s.aws/alb' controller, one ALB shall be created and functional", func() {
+		It("[ingress-class] in IP mode, with IngressClass configured with 'ingress.k8s.aws/alb' controller, one ALB shall be created and functional", func() {
 			appBuilder := manifest.NewFixedResponseServiceBuilder()
 			ingBuilder := manifest.NewIngressBuilder()
-			dp, svc := appBuilder.Build(sandboxNS.Name, "app")
+			dp, svc := appBuilder.Build(sandboxNS.Name, "app", tf.Options.TestImageRegistry)
+			ingBackend := networking.IngressBackend{
+				Service: &networking.IngressServiceBackend{
+					Name: svc.Name,
+					Port: networking.ServiceBackendPort{
+						Number: 80,
+					},
+				},
+			}
+			ingClass := &networking.IngressClass{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: sandboxNS.Name,
+				},
+				Spec: networking.IngressClassSpec{
+					Controller: "ingress.k8s.aws/alb",
+				},
+			}
+			annotation := map[string]string{
+				"alb.ingress.kubernetes.io/scheme":      "internet-facing",
+				"alb.ingress.kubernetes.io/target-type": "ip",
+			}
+			if tf.Options.IPFamily == framework.IPv6 {
+				annotation["alb.ingress.kubernetes.io/ip-address-type"] = "dualstack"
+			}
+			ing := ingBuilder.
+				AddHTTPRoute("", networking.HTTPIngressPath{Path: "/path", PathType: &exact, Backend: ingBackend}).
+				WithIngressClassName(ingClass.Name).
+				WithAnnotations(annotation).Build(sandboxNS.Name, "ing")
+			resStack := fixture.NewK8SResourceStack(tf, dp, svc, ingClass, ing)
+			err := resStack.Setup(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			defer resStack.TearDown(ctx)
+
+			lbARN, lbDNS := ExpectOneLBProvisionedForIngress(ctx, tf, ing)
+			// test traffic
+			ExpectLBDNSBeAvailable(ctx, tf, lbARN, lbDNS)
+			httpExp := httpexpect.New(tf.LoggerReporter, fmt.Sprintf("http://%v", lbDNS))
+			httpExp.GET("/path").Expect().
+				Status(http.StatusOK).
+				Body().Equal("Hello World!")
+		})
+		It("[ingress-class] in Instance mode, with IngressClass configured with 'ingress.k8s.aws/alb' controller, one ALB shall be created and functional", func() {
+			appBuilder := manifest.NewFixedResponseServiceBuilder()
+			ingBuilder := manifest.NewIngressBuilder()
+			dp, svc := appBuilder.Build(sandboxNS.Name, "app", tf.Options.TestImageRegistry)
 			ingBackend := networking.IngressBackend{
 				Service: &networking.IngressServiceBackend{
 					Name: svc.Name,
@@ -93,9 +138,8 @@ var _ = Describe("vanilla ingress tests", func() {
 			annotation := map[string]string{
 				"alb.ingress.kubernetes.io/scheme": "internet-facing",
 			}
-			if tf.Options.IPFamily == "IPv6" {
+			if tf.Options.IPFamily == framework.IPv6 {
 				annotation["alb.ingress.kubernetes.io/ip-address-type"] = "dualstack"
-				annotation["alb.ingress.kubernetes.io/target-type"] = "ip"
 			}
 			ing := ingBuilder.
 				AddHTTPRoute("", networking.HTTPIngressPath{Path: "/path", PathType: &exact, Backend: ingBackend}).
@@ -110,16 +154,16 @@ var _ = Describe("vanilla ingress tests", func() {
 			lbARN, lbDNS := ExpectOneLBProvisionedForIngress(ctx, tf, ing)
 			// test traffic
 			ExpectLBDNSBeAvailable(ctx, tf, lbARN, lbDNS)
-			httpExp := httpexpect.New(tf.Logger, fmt.Sprintf("http://%v", lbDNS))
+			httpExp := httpexpect.New(tf.LoggerReporter, fmt.Sprintf("http://%v", lbDNS))
 			httpExp.GET("/path").Expect().
 				Status(http.StatusOK).
 				Body().Equal("Hello World!")
 		})
 
-		It("with 'kubernetes.io/ingress.class' annotation set to 'alb', one ALB shall be created and functional", func() {
+		It("ingress in IP mode, with 'kubernetes.io/ingress.class' annotation set to 'alb', one ALB shall be created and functional", func() {
 			appBuilder := manifest.NewFixedResponseServiceBuilder()
 			ingBuilder := manifest.NewIngressBuilder()
-			dp, svc := appBuilder.Build(sandboxNS.Name, "app")
+			dp, svc := appBuilder.Build(sandboxNS.Name, "app", tf.Options.TestImageRegistry)
 			ingBackend := networking.IngressBackend{
 				Service: &networking.IngressServiceBackend{
 					Name: svc.Name,
@@ -129,12 +173,12 @@ var _ = Describe("vanilla ingress tests", func() {
 				},
 			}
 			annotation := map[string]string{
-				"kubernetes.io/ingress.class":      "alb",
-				"alb.ingress.kubernetes.io/scheme": "internet-facing",
+				"kubernetes.io/ingress.class":           "alb",
+				"alb.ingress.kubernetes.io/scheme":      "internet-facing",
+				"alb.ingress.kubernetes.io/target-type": "ip",
 			}
-			if tf.Options.IPFamily == "IPv6" {
+			if tf.Options.IPFamily == framework.IPv6 {
 				annotation["alb.ingress.kubernetes.io/ip-address-type"] = "dualstack"
-				annotation["alb.ingress.kubernetes.io/target-type"] = "ip"
 			}
 			ing := ingBuilder.
 				AddHTTPRoute("", networking.HTTPIngressPath{Path: "/path", PathType: &exact, Backend: ingBackend}).
@@ -148,7 +192,43 @@ var _ = Describe("vanilla ingress tests", func() {
 			lbARN, lbDNS := ExpectOneLBProvisionedForIngress(ctx, tf, ing)
 			// test traffic
 			ExpectLBDNSBeAvailable(ctx, tf, lbARN, lbDNS)
-			httpExp := httpexpect.New(tf.Logger, fmt.Sprintf("http://%v", lbDNS))
+			httpExp := httpexpect.New(tf.LoggerReporter, fmt.Sprintf("http://%v", lbDNS))
+			httpExp.GET("/path").Expect().
+				Status(http.StatusOK).
+				Body().Equal("Hello World!")
+		})
+		It("ingress in Instance mode, with 'kubernetes.io/ingress.class' annotation set to 'alb', one ALB shall be created and functional", func() {
+			appBuilder := manifest.NewFixedResponseServiceBuilder()
+			ingBuilder := manifest.NewIngressBuilder()
+			dp, svc := appBuilder.Build(sandboxNS.Name, "app", tf.Options.TestImageRegistry)
+			ingBackend := networking.IngressBackend{
+				Service: &networking.IngressServiceBackend{
+					Name: svc.Name,
+					Port: networking.ServiceBackendPort{
+						Number: 80,
+					},
+				},
+			}
+			annotation := map[string]string{
+				"kubernetes.io/ingress.class":      "alb",
+				"alb.ingress.kubernetes.io/scheme": "internet-facing",
+			}
+			if tf.Options.IPFamily == framework.IPv6 {
+				annotation["alb.ingress.kubernetes.io/ip-address-type"] = "dualstack"
+			}
+			ing := ingBuilder.
+				AddHTTPRoute("", networking.HTTPIngressPath{Path: "/path", PathType: &exact, Backend: ingBackend}).
+				WithAnnotations(annotation).Build(sandboxNS.Name, "ing")
+			resStack := fixture.NewK8SResourceStack(tf, dp, svc, ing)
+			err := resStack.Setup(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			defer resStack.TearDown(ctx)
+
+			lbARN, lbDNS := ExpectOneLBProvisionedForIngress(ctx, tf, ing)
+			// test traffic
+			ExpectLBDNSBeAvailable(ctx, tf, lbARN, lbDNS)
+			httpExp := httpexpect.New(tf.LoggerReporter, fmt.Sprintf("http://%v", lbDNS))
 			httpExp.GET("/path").Expect().
 				Status(http.StatusOK).
 				Body().Equal("Hello World!")
@@ -159,7 +239,7 @@ var _ = Describe("vanilla ingress tests", func() {
 		It("[ingress-class] with IngressClass configured with 'nginx' controller, no ALB shall be created", func() {
 			appBuilder := manifest.NewFixedResponseServiceBuilder()
 			ingBuilder := manifest.NewIngressBuilder()
-			dp, svc := appBuilder.Build(sandboxNS.Name, "app")
+			dp, svc := appBuilder.Build(sandboxNS.Name, "app", tf.Options.TestImageRegistry)
 			ingBackend := networking.IngressBackend{
 				Service: &networking.IngressServiceBackend{
 					Name: svc.Name,
@@ -179,7 +259,7 @@ var _ = Describe("vanilla ingress tests", func() {
 			annotation := map[string]string{
 				"alb.ingress.kubernetes.io/scheme": "internet-facing",
 			}
-			if tf.Options.IPFamily == "IPv6" {
+			if tf.Options.IPFamily == framework.IPv6 {
 				annotation["alb.ingress.kubernetes.io/ip-address-type"] = "dualstack"
 			}
 			ing := ingBuilder.
@@ -198,7 +278,7 @@ var _ = Describe("vanilla ingress tests", func() {
 		It("with 'kubernetes.io/ingress.class' annotation set to 'nginx', no ALB shall be created", func() {
 			appBuilder := manifest.NewFixedResponseServiceBuilder()
 			ingBuilder := manifest.NewIngressBuilder()
-			dp, svc := appBuilder.Build(sandboxNS.Name, "app")
+			dp, svc := appBuilder.Build(sandboxNS.Name, "app", tf.Options.TestImageRegistry)
 			ingBackend := networking.IngressBackend{
 				Service: &networking.IngressServiceBackend{
 					Name: svc.Name,
@@ -211,7 +291,7 @@ var _ = Describe("vanilla ingress tests", func() {
 				"kubernetes.io/ingress.class":      "nginx",
 				"alb.ingress.kubernetes.io/scheme": "internet-facing",
 			}
-			if tf.Options.IPFamily == "IPv6" {
+			if tf.Options.IPFamily == framework.IPv6 {
 				annotation["alb.ingress.kubernetes.io/ip-address-type"] = "dualstack"
 			}
 			ing := ingBuilder.
@@ -229,7 +309,7 @@ var _ = Describe("vanilla ingress tests", func() {
 		It("without IngressClass or 'kubernetes.io/ingress.class' annotation, no ALB shall be created", func() {
 			appBuilder := manifest.NewFixedResponseServiceBuilder()
 			ingBuilder := manifest.NewIngressBuilder()
-			dp, svc := appBuilder.Build(sandboxNS.Name, "app")
+			dp, svc := appBuilder.Build(sandboxNS.Name, "app", tf.Options.TestImageRegistry)
 			ingBackend := networking.IngressBackend{
 				Service: &networking.IngressServiceBackend{
 					Name: svc.Name,
@@ -241,7 +321,7 @@ var _ = Describe("vanilla ingress tests", func() {
 			annotation := map[string]string{
 				"alb.ingress.kubernetes.io/scheme": "internet-facing",
 			}
-			if tf.Options.IPFamily == "IPv6" {
+			if tf.Options.IPFamily == framework.IPv6 {
 				annotation["alb.ingress.kubernetes.io/ip-address-type"] = "dualstack"
 			}
 			ing := ingBuilder.
@@ -261,7 +341,7 @@ var _ = Describe("vanilla ingress tests", func() {
 		It("with 'alb.ingress.kubernetes.io/load-balancer-name' annotation explicitly specified, one ALB shall be created and functional", func() {
 			appBuilder := manifest.NewFixedResponseServiceBuilder()
 			ingBuilder := manifest.NewIngressBuilder()
-			dp, svc := appBuilder.Build(sandboxNS.Name, "app")
+			dp, svc := appBuilder.Build(sandboxNS.Name, "app", tf.Options.TestImageRegistry)
 			ingBackend := networking.IngressBackend{
 				Service: &networking.IngressServiceBackend{
 					Name: svc.Name,
@@ -277,7 +357,7 @@ var _ = Describe("vanilla ingress tests", func() {
 				"alb.ingress.kubernetes.io/scheme":             "internet-facing",
 				"alb.ingress.kubernetes.io/load-balancer-name": lbName,
 			}
-			if tf.Options.IPFamily == "IPv6" {
+			if tf.Options.IPFamily == framework.IPv6 {
 				annotation["alb.ingress.kubernetes.io/ip-address-type"] = "dualstack"
 				annotation["alb.ingress.kubernetes.io/target-type"] = "ip"
 			}
@@ -294,11 +374,11 @@ var _ = Describe("vanilla ingress tests", func() {
 
 			sdkLB, err := tf.LBManager.GetLoadBalancerFromARN(ctx, lbARN)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(awssdk.StringValue(sdkLB.LoadBalancerName)).Should(Equal(lbName))
+			Expect(awssdk.ToString(sdkLB.LoadBalancerName)).Should(Equal(lbName))
 
 			// test traffic
 			ExpectLBDNSBeAvailable(ctx, tf, lbARN, lbDNS)
-			httpExp := httpexpect.New(tf.Logger, fmt.Sprintf("http://%v", lbDNS))
+			httpExp := httpexpect.New(tf.LoggerReporter, fmt.Sprintf("http://%v", lbDNS))
 			httpExp.GET("/path").Expect().
 				Status(http.StatusOK).
 				Body().Equal("Hello World!")
@@ -309,7 +389,7 @@ var _ = Describe("vanilla ingress tests", func() {
 		It("with 'alb.ingress.kubernetes.io/target-type' annotation explicitly specified, one ALB shall be created and functional", func() {
 			appBuilder := manifest.NewFixedResponseServiceBuilder().WithTargetPortName("e2e-targetport")
 			ingBuilder := manifest.NewIngressBuilder()
-			dp, svc := appBuilder.Build(sandboxNS.Name, "app")
+			dp, svc := appBuilder.Build(sandboxNS.Name, "app", tf.Options.TestImageRegistry)
 			ingBackend := networking.IngressBackend{
 				Service: &networking.IngressServiceBackend{
 					Name: svc.Name,
@@ -323,7 +403,7 @@ var _ = Describe("vanilla ingress tests", func() {
 				"alb.ingress.kubernetes.io/scheme":      "internet-facing",
 				"alb.ingress.kubernetes.io/target-type": "ip",
 			}
-			if tf.Options.IPFamily == "IPv6" {
+			if tf.Options.IPFamily == framework.IPv6 {
 				annotation["alb.ingress.kubernetes.io/ip-address-type"] = "dualstack"
 			}
 			ing := ingBuilder.
@@ -339,7 +419,48 @@ var _ = Describe("vanilla ingress tests", func() {
 
 			// test traffic
 			ExpectLBDNSBeAvailable(ctx, tf, lbARN, lbDNS)
-			httpExp := httpexpect.New(tf.Logger, fmt.Sprintf("http://%v", lbDNS))
+			httpExp := httpexpect.New(tf.LoggerReporter, fmt.Sprintf("http://%v", lbDNS))
+			httpExp.GET("/path").Expect().
+				Status(http.StatusOK).
+				Body().Equal("Hello World!")
+		})
+	})
+
+	Context("with ALB IP targets, named target port and endPointSlices enabled", func() {
+		It("with 'alb.ingress.kubernetes.io/target-type' annotation explicitly specified, and endPointSlices enabled, one ALB shall be created and functional", func() {
+			appBuilder := manifest.NewFixedResponseServiceBuilder().WithTargetPortName("e2e-targetport")
+			ingBuilder := manifest.NewIngressBuilder()
+			dp, svc := appBuilder.Build(sandboxNS.Name, "app", tf.Options.TestImageRegistry)
+			ingBackend := networking.IngressBackend{
+				Service: &networking.IngressServiceBackend{
+					Name: svc.Name,
+					Port: networking.ServiceBackendPort{
+						Number: 80,
+					},
+				},
+			}
+			annotation := map[string]string{
+				"kubernetes.io/ingress.class":           "alb",
+				"alb.ingress.kubernetes.io/scheme":      "internet-facing",
+				"alb.ingress.kubernetes.io/target-type": "ip",
+			}
+			if tf.Options.IPFamily == framework.IPv6 {
+				annotation["alb.ingress.kubernetes.io/ip-address-type"] = "dualstack"
+			}
+			ing := ingBuilder.
+				AddHTTPRoute("", networking.HTTPIngressPath{Path: "/path", PathType: &exact, Backend: ingBackend}).
+				WithAnnotations(annotation).Build(sandboxNS.Name, "ing")
+			resStack := fixture.NewK8SResourceStack(tf, dp, svc, ing)
+			err := resStack.Setup(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			defer resStack.TearDown(ctx)
+
+			lbARN, lbDNS := ExpectOneLBProvisionedForIngress(ctx, tf, ing)
+
+			// test traffic
+			ExpectLBDNSBeAvailable(ctx, tf, lbARN, lbDNS)
+			httpExp := httpexpect.New(tf.LoggerReporter, fmt.Sprintf("http://%v", lbDNS))
 			httpExp.GET("/path").Expect().
 				Status(http.StatusOK).
 				Body().Equal("Hello World!")
@@ -350,8 +471,8 @@ var _ = Describe("vanilla ingress tests", func() {
 		It("with annotation based actions, one ALB shall be created and functional", func() {
 			appBuilder := manifest.NewFixedResponseServiceBuilder()
 			ingBuilder := manifest.NewIngressBuilder()
-			dp1, svc1 := appBuilder.WithHTTPBody("app-1").Build(sandboxNS.Name, "app-1")
-			dp2, svc2 := appBuilder.WithHTTPBody("app-2").Build(sandboxNS.Name, "app-2")
+			dp1, svc1 := appBuilder.WithHTTPBody("app-1").Build(sandboxNS.Name, "app-1", tf.Options.TestImageRegistry)
+			dp2, svc2 := appBuilder.WithHTTPBody("app-2").Build(sandboxNS.Name, "app-2", tf.Options.TestImageRegistry)
 			ingResponse503Backend := networking.IngressBackend{
 				Service: &networking.IngressServiceBackend{
 					Name: "response-503",
@@ -392,7 +513,7 @@ var _ = Describe("vanilla ingress tests", func() {
 				"alb.ingress.kubernetes.io/actions.forward-single-tg":   "{\"type\":\"forward\",\"forwardConfig\":{\"targetGroups\":[{\"serviceName\":\"app-1\",\"servicePort\":\"80\"}]}}",
 				"alb.ingress.kubernetes.io/actions.forward-multiple-tg": "{\"type\":\"forward\",\"forwardConfig\":{\"targetGroups\":[{\"serviceName\":\"app-1\",\"servicePort\":\"80\",\"weight\":20},{\"serviceName\":\"app-2\",\"servicePort\":80,\"weight\":80}],\"targetGroupStickinessConfig\":{\"enabled\":true,\"durationSeconds\":200}}}",
 			}
-			if tf.Options.IPFamily == "IPv6" {
+			if tf.Options.IPFamily == framework.IPv6 {
 				annotation["alb.ingress.kubernetes.io/ip-address-type"] = "dualstack"
 				annotation["alb.ingress.kubernetes.io/target-type"] = "ip"
 			}
@@ -411,7 +532,7 @@ var _ = Describe("vanilla ingress tests", func() {
 			lbARN, lbDNS := ExpectOneLBProvisionedForIngress(ctx, tf, ing)
 			// test traffic
 			ExpectLBDNSBeAvailable(ctx, tf, lbARN, lbDNS)
-			httpExp := httpexpect.New(tf.Logger, fmt.Sprintf("http://%v", lbDNS))
+			httpExp := httpexpect.New(tf.LoggerReporter, fmt.Sprintf("http://%v", lbDNS))
 			httpExp.GET("/response-503").Expect().
 				Status(http.StatusServiceUnavailable).
 				Body().Equal("503 error text")
@@ -505,7 +626,7 @@ var _ = Describe("vanilla ingress tests", func() {
 				"alb.ingress.kubernetes.io/actions.rule-path7":    "{\"type\":\"fixed-response\",\"fixedResponseConfig\":{\"contentType\":\"text/plain\",\"statusCode\":\"200\",\"messageBody\":\"multiple conditions applies\"}}",
 				"alb.ingress.kubernetes.io/conditions.rule-path7": "[{\"field\":\"http-header\",\"httpHeaderConfig\":{\"httpHeaderName\": \"HeaderName\", \"values\":[\"HeaderValue\"]}},{\"field\":\"query-string\",\"queryStringConfig\":{\"values\":[{\"key\":\"paramA\",\"value\":\"valueA\"}]}},{\"field\":\"query-string\",\"queryStringConfig\":{\"values\":[{\"key\":\"paramB\",\"value\":\"valueB\"}]}}]",
 			}
-			if tf.Options.IPFamily == "IPv6" {
+			if tf.Options.IPFamily == "framework.IPv6" {
 				annotation["alb.ingress.kubernetes.io/ip-address-type"] = "dualstack"
 				annotation["alb.ingress.kubernetes.io/target-type"] = "ip"
 			}
@@ -527,7 +648,7 @@ var _ = Describe("vanilla ingress tests", func() {
 			lbARN, lbDNS := ExpectOneLBProvisionedForIngress(ctx, tf, ing)
 			// test traffic
 			ExpectLBDNSBeAvailable(ctx, tf, lbARN, lbDNS)
-			httpExp := httpexpect.New(tf.Logger, fmt.Sprintf("http://%v", lbDNS))
+			httpExp := httpexpect.New(tf.LoggerReporter, fmt.Sprintf("http://%v", lbDNS))
 			httpExp.GET("/path1").WithHost("www.example.com").Expect().
 				Status(http.StatusOK).
 				Body().Equal("Host is www.example.com OR anno.example.com")
@@ -592,6 +713,360 @@ var _ = Describe("vanilla ingress tests", func() {
 				Status(http.StatusNotFound)
 		})
 	})
+
+	Context("with `alb.ingress.kubernetes.io/ip-address-type` variant settings", func() {
+		It("with 'alb.ingress.kubernetes.io/ip-address-type' annotation explicitly specified, one ALB shall be created and functional", func() {
+			appBuilder := manifest.NewFixedResponseServiceBuilder()
+			ingBuilder := manifest.NewIngressBuilder()
+			dp, svc := appBuilder.Build(sandboxNS.Name, "app", tf.Options.TestImageRegistry)
+			ingBackend := networking.IngressBackend{
+				Service: &networking.IngressServiceBackend{
+					Name: svc.Name,
+					Port: networking.ServiceBackendPort{
+						Number: 80,
+					},
+				},
+			}
+			annotation := map[string]string{
+				"kubernetes.io/ingress.class":               "alb",
+				"alb.ingress.kubernetes.io/scheme":          "internet-facing",
+				"alb.ingress.kubernetes.io/target-type":     "ip",
+				"alb.ingress.kubernetes.io/ip-address-type": "ipv4",
+			}
+
+			if tf.Options.IPFamily == framework.IPv6 {
+				// TODO: annotate to "dualstack-without-public-ipv4" for all regions once it's GA
+				if tf.Options.AWSRegion == "us-west-2" {
+					annotation["alb.ingress.kubernetes.io/ip-address-type"] = "dualstack-without-public-ipv4"
+				} else {
+					annotation["alb.ingress.kubernetes.io/ip-address-type"] = "dualstack"
+				}
+			}
+
+			ing := ingBuilder.
+				AddHTTPRoute("", networking.HTTPIngressPath{Path: "/path", PathType: &exact, Backend: ingBackend}).
+				WithAnnotations(annotation).Build(sandboxNS.Name, "ing")
+			resStack := fixture.NewK8SResourceStack(tf, dp, svc, ing)
+			err := resStack.Setup(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			defer resStack.TearDown(ctx)
+
+			lbARN, lbDNS := ExpectOneLBProvisionedForIngress(ctx, tf, ing)
+
+			// test traffic
+			ExpectLBDNSBeAvailable(ctx, tf, lbARN, lbDNS)
+
+			//TODO: update the traffic test for dualstack-without-public-ipv4 ALB
+			//      as it may need additional setup compared to dualstack ALB
+			if annotation["alb.ingress.kubernetes.io/ip-address-type"] != "dualstack-without-public-ipv4" {
+				httpExp := httpexpect.New(tf.LoggerReporter, fmt.Sprintf("http://%v", lbDNS))
+				httpExp.GET("/path").Expect().
+					Status(http.StatusOK).
+					Body().Equal("Hello World!")
+			}
+		})
+	})
+
+	Context("with `alb.ingress.kubernetes.io/listener-attributes.{Protocol}-{Port}` variant settings", func() {
+		It("with 'alb.ingress.kubernetes.io/listener-attributes.{Protocol}-{Port}' annotation explicitly specified, one ALB shall be created and functional", func() {
+			appBuilder := manifest.NewFixedResponseServiceBuilder()
+			ingBuilder := manifest.NewIngressBuilder()
+			dp, svc := appBuilder.Build(sandboxNS.Name, "app", tf.Options.TestImageRegistry)
+			ingBackend := networking.IngressBackend{
+				Service: &networking.IngressServiceBackend{
+					Name: svc.Name,
+					Port: networking.ServiceBackendPort{
+						Number: 80,
+					},
+				},
+			}
+			annotation := map[string]string{
+				"kubernetes.io/ingress.class":                           "alb",
+				"alb.ingress.kubernetes.io/scheme":                      "internet-facing",
+				"alb.ingress.kubernetes.io/listen-ports":                `[{"HTTP": 80}]`,
+				"alb.ingress.kubernetes.io/listener-attributes.HTTP-80": "routing.http.response.server.enabled=false",
+			}
+			if tf.Options.IPFamily == framework.IPv6 {
+				annotation["alb.ingress.kubernetes.io/ip-address-type"] = "dualstack"
+				annotation["alb.ingress.kubernetes.io/target-type"] = "ip"
+			}
+			ing := ingBuilder.
+				AddHTTPRoute("", networking.HTTPIngressPath{Path: "/path", PathType: &exact, Backend: ingBackend}).
+				WithAnnotations(annotation).Build(sandboxNS.Name, "ing")
+			resStack := fixture.NewK8SResourceStack(tf, dp, svc, ing)
+			err := resStack.Setup(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			defer resStack.TearDown(ctx)
+
+			lbARN, lbDNS := ExpectOneLBProvisionedForIngress(ctx, tf, ing)
+			sdkListeners, err := tf.LBManager.GetLoadBalancerListeners(ctx, lbARN)
+
+			Eventually(func() bool {
+				return verifyListenerAttributes(ctx, tf, *sdkListeners[0].ListenerArn, map[string]string{
+					"routing.http.response.server.enabled": "false",
+				}) == nil
+			}, utils.PollTimeoutShort, utils.PollIntervalMedium).Should(BeTrue())
+
+			// test traffic
+			ExpectLBDNSBeAvailable(ctx, tf, lbARN, lbDNS)
+			httpExp := httpexpect.New(tf.LoggerReporter, fmt.Sprintf("http://%v", lbDNS))
+			httpExp.GET("/path").Expect().
+				Status(http.StatusOK).
+				Body().Equal("Hello World!")
+		})
+	})
+
+	Context("When created with managed alb with tags provided via annotations", func() {
+		It("ALB will have correct tags", func() {
+			appBuilder := manifest.NewFixedResponseServiceBuilder()
+			ingBuilder := manifest.NewIngressBuilder()
+			dp, svc := appBuilder.Build(sandboxNS.Name, "app", tf.Options.TestImageRegistry)
+			ingBackend := networking.IngressBackend{
+				Service: &networking.IngressServiceBackend{
+					Name: svc.Name,
+					Port: networking.ServiceBackendPort{
+						Number: 80,
+					},
+				},
+			}
+			annotation := map[string]string{
+				"kubernetes.io/ingress.class":      "alb",
+				"alb.ingress.kubernetes.io/scheme": "internet-facing",
+				"alb.ingress.kubernetes.io/tags":   "k1=v1,k2=v2",
+			}
+			if tf.Options.IPFamily == framework.IPv6 {
+				annotation["alb.ingress.kubernetes.io/ip-address-type"] = "dualstack"
+				annotation["alb.ingress.kubernetes.io/target-type"] = "ip"
+			}
+			ing := ingBuilder.
+				AddHTTPRoute("", networking.HTTPIngressPath{Path: "/path", PathType: &exact, Backend: ingBackend}).
+				WithAnnotations(annotation).Build(sandboxNS.Name, "ing")
+			resStack := fixture.NewK8SResourceStack(tf, dp, svc, ing)
+			err := resStack.Setup(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			defer resStack.TearDown(ctx)
+
+			lbARN, _ := ExpectOneLBProvisionedForIngress(ctx, tf, ing)
+
+			// Verify tags
+			expectedTags := map[string]string{
+				"k1": "v1",
+				"k2": "v2",
+			}
+			// Verify tags using DescribeTags
+			var tagDescriptions []elbv2types.TagDescription
+			Eventually(func() (bool, error) {
+				req := &elasticloadbalancingv2.DescribeTagsInput{
+					ResourceArns: []string{lbARN},
+				}
+				resp, err := tf.Cloud.ELBV2().DescribeTagsWithContext(ctx, req)
+				if err != nil {
+					return false, err
+				}
+				if len(resp.TagDescriptions) > 0 {
+					tagDescriptions = resp.TagDescriptions
+					return true, nil
+				}
+				return false, nil
+			}, utils.PollTimeoutShort, utils.PollIntervalMedium).Should(BeTrue())
+
+			// At this point we should have exactly one TagDescription since we only queried one LB
+			Expect(tagDescriptions).To(HaveLen(1), "Expected exactly one TagDescription")
+			foundTags := 0
+			for _, tag := range tagDescriptions[0].Tags {
+				if val, ok := expectedTags[awssdk.ToString(tag.Key)]; ok && val == awssdk.ToString(tag.Value) {
+					foundTags++
+				}
+			}
+			Expect(foundTags).To(Equal(len(expectedTags)), "Not all expected tags were found on the ALB")
+		})
+	})
+
+	Context("with frontend NLB enabled", func() {
+		It("should create a frontend NLB and route traffic correctly", func() {
+			appBuilder := manifest.NewFixedResponseServiceBuilder()
+			ingBuilder := manifest.NewIngressBuilder()
+			dp, svc := appBuilder.Build(sandboxNS.Name, "app", tf.Options.TestImageRegistry)
+			ingBackend := networking.IngressBackend{
+				Service: &networking.IngressServiceBackend{
+					Name: svc.Name,
+					Port: networking.ServiceBackendPort{
+						Number: 80,
+					},
+				},
+			}
+			annotation := map[string]string{
+				"kubernetes.io/ingress.class":                             "alb",
+				"alb.ingress.kubernetes.io/scheme":                        "internet-facing",
+				"alb.ingress.kubernetes.io/listen-ports":                  `[{"HTTP": 80}]`,
+				"alb.ingress.kubernetes.io/enable-frontend-nlb":           "true",
+				"alb.ingress.kubernetes.io/frontend-nlb-healthcheck-path": "/path",
+				"alb.ingress.kubernetes.io/frontend-nlb-scheme":           "internet-facing",
+			}
+
+			if tf.Options.IPFamily == framework.IPv6 {
+				annotation["alb.ingress.kubernetes.io/ip-address-type"] = "dualstack"
+				annotation["alb.ingress.kubernetes.io/target-type"] = "ip"
+			}
+
+			ing := ingBuilder.
+				AddHTTPRoute("", networking.HTTPIngressPath{Path: "/path", PathType: &exact, Backend: ingBackend}).
+				WithAnnotations(annotation).Build(sandboxNS.Name, "ing")
+			resStack := fixture.NewK8SResourceStack(tf, dp, svc, ing)
+			err := resStack.Setup(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			defer resStack.TearDown(ctx)
+
+			time.Sleep(6 * time.Minute) // Waiting 6 minutes for target registration and DNS propagation, and health check
+
+			albARN, albDNS, nlbARN, nlbDNS := ExpectTwoLBProvisionedForIngress(ctx, tf, ing)
+
+			// test alb traffic
+			ExpectLBDNSBeAvailable(ctx, tf, albARN, albDNS)
+			httpExp := httpexpect.New(tf.LoggerReporter, fmt.Sprintf("http://%v", albDNS))
+			httpExp.GET("/path").Expect().
+				Status(http.StatusOK).
+				Body().Equal("Hello World!")
+
+			// test nlb traffic
+			ExpectLBDNSBeAvailable(ctx, tf, nlbARN, nlbDNS)
+			nlbHttpExp := httpexpect.New(tf.LoggerReporter, fmt.Sprintf("http://%v", nlbDNS))
+			nlbHttpExp.GET("/path").Expect().
+				Status(http.StatusOK).
+				Body().Equal("Hello World!")
+
+		})
+
+	})
+
+	Context("with JWT validation pre-routing action", func() {
+		It("with JWT validation annotation, one ALB shall be created and functional", func() {
+			if len(tf.Options.CertificateARNs) == 0 {
+				Skip("Skipping tests, certificates not specified")
+			}
+
+			// Setup a simple ingress
+			appBuilder := manifest.NewFixedResponseServiceBuilder()
+			ingBuilder := manifest.NewIngressBuilder()
+			dp, svc := appBuilder.Build(sandboxNS.Name, "app", tf.Options.TestImageRegistry)
+			ingBackend := networking.IngressBackend{
+				Service: &networking.IngressServiceBackend{
+					Name: svc.Name,
+					Port: networking.ServiceBackendPort{
+						Number: 80,
+					},
+				},
+			}
+			ingClass := &networking.IngressClass{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: sandboxNS.Name,
+				},
+				Spec: networking.IngressClassSpec{
+					Controller: "ingress.k8s.aws/alb",
+				},
+			}
+
+			// Use annotations to setup HTTPS listener with JWT validation
+			cert := strings.Split(tf.Options.CertificateARNs, ",")[0]
+			annotation := map[string]string{
+				"alb.ingress.kubernetes.io/scheme":          "internet-facing",
+				"alb.ingress.kubernetes.io/target-type":     "ip",
+				"alb.ingress.kubernetes.io/listen-ports":    "[{\"HTTPS\": 443}]",
+				"alb.ingress.kubernetes.io/certificate-arn": cert,
+				"alb.ingress.kubernetes.io/ssl-policy":      "ELBSecurityPolicy-TLS13-1-2-Res-2021-06",
+				"alb.ingress.kubernetes.io/jwt-validation":  "{\"jwksEndpoint\":\"https://example-endpoint.com/path\",\"issuer\":\"https://example-issuer.com\",\"additionalClaims\":[{\"name\":\"admin\",\"format\":\"single-string\",\"values\":[\"true\"]},{\"name\":\"ver\",\"format\":\"string-array\",\"values\":[\"6\",\"19\"]},{\"name\":\"scope\",\"format\":\"space-separated-values\",\"values\":[\"read:api\",\"write\",\"email\"]}]}",
+			}
+			if tf.Options.IPFamily == "IPv6" {
+				annotation["alb.ingress.kubernetes.io/ip-address-type"] = "dualstack"
+			}
+
+			// Construct the ingress
+			ing := ingBuilder.
+				AddHTTPRoute("", networking.HTTPIngressPath{Path: "/path", PathType: &exact, Backend: ingBackend}).
+				WithIngressClassName(ingClass.Name).
+				WithAnnotations(annotation).Build(sandboxNS.Name, "ing")
+
+			// Deploy stack
+			resStack := fixture.NewK8SResourceStack(tf, dp, svc, ingClass, ing)
+			err := resStack.Setup(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			defer resStack.TearDown(ctx)
+
+			lbARN, lbDNS := ExpectOneLBProvisionedForIngress(ctx, tf, ing)
+
+			By("verifying listener", func() {
+				err := verifier.VerifyLoadBalancerListener(ctx, tf, lbARN, 443, &verifier.ListenerExpectation{
+					ProtocolPort:          "HTTPS:443",
+					DefaultCertificateARN: cert,
+					SSLPolicy:             "ELBSecurityPolicy-TLS13-1-2-Res-2021-06",
+				})
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			By("verifying listener rules with jwt validation action", func() {
+				err := verifier.VerifyLoadBalancerListenerRules(ctx, tf, lbARN, int32(443), []verifier.ListenerRuleExpectation{
+					{
+						Conditions: []elbv2types.RuleCondition{
+							{
+								Field: awssdk.String(string(elbv2model.RuleConditionFieldPathPattern)),
+								PathPatternConfig: &elbv2types.PathPatternConditionConfig{
+									Values: []string{"/path"},
+								},
+							},
+						},
+						Actions: []elbv2types.Action{
+							{
+								Type: elbv2types.ActionTypeEnum(elbv2model.ActionTypeJwtValidation),
+								JwtValidationConfig: &elbv2types.JwtValidationActionConfig{
+									JwksEndpoint: awssdk.String("https://example-endpoint.com/path"),
+									Issuer:       awssdk.String("https://example-issuer.com"),
+									AdditionalClaims: []elbv2types.JwtValidationActionAdditionalClaim{
+										{
+											Format: elbv2types.JwtValidationActionAdditionalClaimFormatEnumSingleString,
+											Name:   awssdk.String("admin"),
+											Values: []string{"true"},
+										},
+										{
+											Format: elbv2types.JwtValidationActionAdditionalClaimFormatEnumStringArray,
+											Name:   awssdk.String("ver"),
+											Values: []string{"6", "19"},
+										},
+										{
+											Format: elbv2types.JwtValidationActionAdditionalClaimFormatEnumSpaceSeparatedValues,
+											Name:   awssdk.String("scope"),
+											Values: []string{"read:api", "write", "email"},
+										},
+									},
+								},
+							},
+							{
+								Type: elbv2types.ActionTypeEnum(elbv2model.ActionTypeForward),
+								ForwardConfig: &elbv2types.ForwardActionConfig{
+									TargetGroups: []elbv2types.TargetGroupTuple{
+										{
+											TargetGroupArn: awssdk.String("arn:randomArn"),
+											Weight:         awssdk.Int32(1),
+										},
+									},
+								},
+							},
+						},
+						Priority: 1,
+					},
+				})
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			By("waiting until DNS name is available", func() {
+				ExpectLBDNSBeAvailable(ctx, tf, lbARN, lbDNS)
+			})
+		})
+	})
+
 })
 
 // ExpectOneLBProvisionedForIngress expects one LoadBalancer provisioned for Ingress.
@@ -611,6 +1086,30 @@ func ExpectOneLBProvisionedForIngress(ctx context.Context, tf *framework.Framewo
 	return lbARN, lbDNS
 }
 
+// ExpectTwoLBProvisionedForIngress expects one ALB and one frontend NLB provisioned for the Ingress.
+func ExpectTwoLBProvisionedForIngress(ctx context.Context, tf *framework.Framework, ing *networking.Ingress) (albARN string, albDNS string, nlbARN string, nlbDNS string) {
+	// Verify ALB is provisioned
+	Eventually(func(g Gomega) {
+		err := tf.K8sClient.Get(ctx, k8s.NamespacedName(ing), ing)
+		g.Expect(err).NotTo(HaveOccurred())
+		albDNS, nlbDNS = shared_utils.FindIngressTwoDNSName(ing)
+		g.Expect(albDNS).ShouldNot(BeEmpty())
+		g.Expect(nlbDNS).ShouldNot(BeEmpty())
+	}, utils.IngressReconcileTimeout, utils.PollIntervalShort).Should(Succeed())
+	tf.Logger.Info("ingress DNS populated", "dnsName", albDNS)
+	tf.Logger.Info("ingress DNS populated", "dnsName", nlbDNS)
+
+	var err error
+	albARN, err = tf.LBManager.FindLoadBalancerByDNSName(ctx, albDNS)
+	Expect(err).ShouldNot(HaveOccurred())
+	tf.Logger.Info("ALB provisioned", "arn", albARN)
+
+	nlbARN, err = tf.LBManager.FindLoadBalancerByDNSName(ctx, nlbDNS)
+	Expect(err).ShouldNot(HaveOccurred())
+	tf.Logger.Info("NLB provisioned", "arn", nlbARN)
+	return albARN, albDNS, nlbARN, nlbDNS
+}
+
 // ExpectNoLBProvisionedForIngress expects no LoadBalancer provisioned for Ingress.
 func ExpectNoLBProvisionedForIngress(ctx context.Context, tf *framework.Framework, ing *networking.Ingress) {
 	Consistently(func(g Gomega) {
@@ -622,7 +1121,7 @@ func ExpectNoLBProvisionedForIngress(ctx context.Context, tf *framework.Framewor
 }
 
 func ExpectLBDNSBeAvailable(ctx context.Context, tf *framework.Framework, lbARN string, lbDNS string) {
-	ctx, cancel := context.WithTimeout(ctx, utils.IngressDNSAvailableWaitTimeout)
+	ctx, cancel := context.WithTimeout(ctx, tf.Options.DNSTimeout)
 	defer cancel()
 
 	tf.Logger.Info("wait loadBalancer becomes available", "arn", lbARN)
@@ -634,4 +1133,15 @@ func ExpectLBDNSBeAvailable(ctx context.Context, tf *framework.Framework, lbARN 
 	err = utils.WaitUntilDNSNameAvailable(ctx, lbDNS)
 	Expect(err).NotTo(HaveOccurred())
 	tf.Logger.Info("dns becomes available", "dns", lbDNS)
+}
+
+func verifyListenerAttributes(ctx context.Context, f *framework.Framework, lsARN string, expectedAttrs map[string]string) error {
+	lsAttrs, err := f.LBManager.GetListenerAttributes(ctx, lsARN)
+	Expect(err).NotTo(HaveOccurred())
+	for _, attr := range lsAttrs {
+		if val, ok := expectedAttrs[awssdk.ToString(attr.Key)]; ok && val != awssdk.ToString(attr.Value) {
+			return errors.Errorf("Attribute %v, expected %v, actual %v", awssdk.ToString(attr.Key), val, awssdk.ToString(attr.Value))
+		}
+	}
+	return nil
 }

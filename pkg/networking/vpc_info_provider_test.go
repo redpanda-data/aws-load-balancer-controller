@@ -2,15 +2,17 @@ package networking
 
 import (
 	"context"
+	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"testing"
 
-	awssdk "github.com/aws/aws-sdk-go/aws"
-	ec2sdk "github.com/aws/aws-sdk-go/service/ec2"
+	awssdk "github.com/aws/aws-sdk-go-v2/aws"
+	ec2sdk "github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/go-logr/logr"
 	"github.com/golang/mock/gomock"
 	"github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/aws/services"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 func Test_defaultVPCInfoProvider_FetchVPCInfo(t *testing.T) {
@@ -39,17 +41,17 @@ func Test_defaultVPCInfoProvider_FetchVPCInfo(t *testing.T) {
 				describeVpcsCalls: []describeVpcsCall{
 					{
 						req: &ec2sdk.DescribeVpcsInput{
-							VpcIds: awssdk.StringSlice([]string{"vpc-2f09a348"}),
+							VpcIds: []string{"vpc-2f09a348"},
 						},
 						resp: &ec2sdk.DescribeVpcsOutput{
-							Vpcs: []*ec2sdk.Vpc{
+							Vpcs: []ec2types.Vpc{
 								{
 									VpcId: awssdk.String("vpc-2f09a348"),
-									CidrBlockAssociationSet: []*ec2sdk.VpcCidrBlockAssociation{
+									CidrBlockAssociationSet: []ec2types.VpcCidrBlockAssociation{
 										{
 											CidrBlock: awssdk.String("192.168.0.0/16"),
-											CidrBlockState: &ec2sdk.VpcCidrBlockState{
-												State: awssdk.String(ec2sdk.VpcCidrBlockStateCodeAssociated),
+											CidrBlockState: &ec2types.VpcCidrBlockState{
+												State: ec2types.VpcCidrBlockStateCodeAssociated,
 											},
 										},
 									},
@@ -64,11 +66,11 @@ func Test_defaultVPCInfoProvider_FetchVPCInfo(t *testing.T) {
 					vpcID: "vpc-2f09a348",
 					want: VPCInfo{
 						VpcId: awssdk.String("vpc-2f09a348"),
-						CidrBlockAssociationSet: []*ec2sdk.VpcCidrBlockAssociation{
+						CidrBlockAssociationSet: []ec2types.VpcCidrBlockAssociation{
 							{
 								CidrBlock: awssdk.String("192.168.0.0/16"),
-								CidrBlockState: &ec2sdk.VpcCidrBlockState{
-									State: awssdk.String(ec2sdk.VpcCidrBlockStateCodeAssociated),
+								CidrBlockState: &ec2types.VpcCidrBlockState{
+									State: ec2types.VpcCidrBlockStateCodeAssociated,
 								},
 							},
 						},
@@ -78,11 +80,11 @@ func Test_defaultVPCInfoProvider_FetchVPCInfo(t *testing.T) {
 					vpcID: "vpc-2f09a348",
 					want: VPCInfo{
 						VpcId: awssdk.String("vpc-2f09a348"),
-						CidrBlockAssociationSet: []*ec2sdk.VpcCidrBlockAssociation{
+						CidrBlockAssociationSet: []ec2types.VpcCidrBlockAssociation{
 							{
 								CidrBlock: awssdk.String("192.168.0.0/16"),
-								CidrBlockState: &ec2sdk.VpcCidrBlockState{
-									State: awssdk.String(ec2sdk.VpcCidrBlockStateCodeAssociated),
+								CidrBlockState: &ec2types.VpcCidrBlockState{
+									State: ec2types.VpcCidrBlockStateCodeAssociated,
 								},
 							},
 						},
@@ -96,17 +98,17 @@ func Test_defaultVPCInfoProvider_FetchVPCInfo(t *testing.T) {
 				describeVpcsCalls: []describeVpcsCall{
 					{
 						req: &ec2sdk.DescribeVpcsInput{
-							VpcIds: awssdk.StringSlice([]string{"vpc-2f09a348"}),
+							VpcIds: []string{"vpc-2f09a348"},
 						},
 						resp: &ec2sdk.DescribeVpcsOutput{
-							Vpcs: []*ec2sdk.Vpc{
+							Vpcs: []ec2types.Vpc{
 								{
 									VpcId: awssdk.String("vpc-2f09a348"),
-									CidrBlockAssociationSet: []*ec2sdk.VpcCidrBlockAssociation{
+									CidrBlockAssociationSet: []ec2types.VpcCidrBlockAssociation{
 										{
 											CidrBlock: awssdk.String("192.168.0.0/16"),
-											CidrBlockState: &ec2sdk.VpcCidrBlockState{
-												State: awssdk.String(ec2sdk.VpcCidrBlockStateCodeAssociated),
+											CidrBlockState: &ec2types.VpcCidrBlockState{
+												State: ec2types.VpcCidrBlockStateCodeAssociated,
 											},
 										},
 									},
@@ -116,23 +118,23 @@ func Test_defaultVPCInfoProvider_FetchVPCInfo(t *testing.T) {
 					},
 					{
 						req: &ec2sdk.DescribeVpcsInput{
-							VpcIds: awssdk.StringSlice([]string{"vpc-2f09a348"}),
+							VpcIds: []string{"vpc-2f09a348"},
 						},
 						resp: &ec2sdk.DescribeVpcsOutput{
-							Vpcs: []*ec2sdk.Vpc{
+							Vpcs: []ec2types.Vpc{
 								{
 									VpcId: awssdk.String("vpc-2f09a348"),
-									CidrBlockAssociationSet: []*ec2sdk.VpcCidrBlockAssociation{
+									CidrBlockAssociationSet: []ec2types.VpcCidrBlockAssociation{
 										{
 											CidrBlock: awssdk.String("192.168.0.0/16"),
-											CidrBlockState: &ec2sdk.VpcCidrBlockState{
-												State: awssdk.String(ec2sdk.VpcCidrBlockStateCodeAssociated),
+											CidrBlockState: &ec2types.VpcCidrBlockState{
+												State: ec2types.VpcCidrBlockStateCodeAssociated,
 											},
 										},
 										{
 											CidrBlock: awssdk.String("10.100.0.0/16"),
-											CidrBlockState: &ec2sdk.VpcCidrBlockState{
-												State: awssdk.String(ec2sdk.VpcCidrBlockStateCodeAssociated),
+											CidrBlockState: &ec2types.VpcCidrBlockState{
+												State: ec2types.VpcCidrBlockStateCodeAssociated,
 											},
 										},
 									},
@@ -148,11 +150,11 @@ func Test_defaultVPCInfoProvider_FetchVPCInfo(t *testing.T) {
 					opts:  []FetchVPCInfoOption{FetchVPCInfoWithoutCache()},
 					want: VPCInfo{
 						VpcId: awssdk.String("vpc-2f09a348"),
-						CidrBlockAssociationSet: []*ec2sdk.VpcCidrBlockAssociation{
+						CidrBlockAssociationSet: []ec2types.VpcCidrBlockAssociation{
 							{
 								CidrBlock: awssdk.String("192.168.0.0/16"),
-								CidrBlockState: &ec2sdk.VpcCidrBlockState{
-									State: awssdk.String(ec2sdk.VpcCidrBlockStateCodeAssociated),
+								CidrBlockState: &ec2types.VpcCidrBlockState{
+									State: ec2types.VpcCidrBlockStateCodeAssociated,
 								},
 							},
 						},
@@ -163,17 +165,17 @@ func Test_defaultVPCInfoProvider_FetchVPCInfo(t *testing.T) {
 					opts:  []FetchVPCInfoOption{FetchVPCInfoWithoutCache()},
 					want: VPCInfo{
 						VpcId: awssdk.String("vpc-2f09a348"),
-						CidrBlockAssociationSet: []*ec2sdk.VpcCidrBlockAssociation{
+						CidrBlockAssociationSet: []ec2types.VpcCidrBlockAssociation{
 							{
 								CidrBlock: awssdk.String("192.168.0.0/16"),
-								CidrBlockState: &ec2sdk.VpcCidrBlockState{
-									State: awssdk.String(ec2sdk.VpcCidrBlockStateCodeAssociated),
+								CidrBlockState: &ec2types.VpcCidrBlockState{
+									State: ec2types.VpcCidrBlockStateCodeAssociated,
 								},
 							},
 							{
 								CidrBlock: awssdk.String("10.100.0.0/16"),
-								CidrBlockState: &ec2sdk.VpcCidrBlockState{
-									State: awssdk.String(ec2sdk.VpcCidrBlockStateCodeAssociated),
+								CidrBlockState: &ec2types.VpcCidrBlockState{
+									State: ec2types.VpcCidrBlockStateCodeAssociated,
 								},
 							},
 						},
@@ -187,17 +189,17 @@ func Test_defaultVPCInfoProvider_FetchVPCInfo(t *testing.T) {
 				describeVpcsCalls: []describeVpcsCall{
 					{
 						req: &ec2sdk.DescribeVpcsInput{
-							VpcIds: awssdk.StringSlice([]string{"vpc-2f09a348"}),
+							VpcIds: []string{"vpc-2f09a348"},
 						},
 						resp: &ec2sdk.DescribeVpcsOutput{
-							Vpcs: []*ec2sdk.Vpc{
+							Vpcs: []ec2types.Vpc{
 								{
 									VpcId: awssdk.String("vpc-2f09a348"),
-									CidrBlockAssociationSet: []*ec2sdk.VpcCidrBlockAssociation{
+									CidrBlockAssociationSet: []ec2types.VpcCidrBlockAssociation{
 										{
 											CidrBlock: awssdk.String("192.168.0.0/16"),
-											CidrBlockState: &ec2sdk.VpcCidrBlockState{
-												State: awssdk.String(ec2sdk.VpcCidrBlockStateCodeAssociated),
+											CidrBlockState: &ec2types.VpcCidrBlockState{
+												State: ec2types.VpcCidrBlockStateCodeAssociated,
 											},
 										},
 									},
@@ -207,17 +209,17 @@ func Test_defaultVPCInfoProvider_FetchVPCInfo(t *testing.T) {
 					},
 					{
 						req: &ec2sdk.DescribeVpcsInput{
-							VpcIds: awssdk.StringSlice([]string{"vpc-2f09a842"}),
+							VpcIds: []string{"vpc-2f09a842"},
 						},
 						resp: &ec2sdk.DescribeVpcsOutput{
-							Vpcs: []*ec2sdk.Vpc{
+							Vpcs: []ec2types.Vpc{
 								{
 									VpcId: awssdk.String("vpc-2f09a842"),
-									CidrBlockAssociationSet: []*ec2sdk.VpcCidrBlockAssociation{
+									CidrBlockAssociationSet: []ec2types.VpcCidrBlockAssociation{
 										{
 											CidrBlock: awssdk.String("10.100.0.0/16"),
-											CidrBlockState: &ec2sdk.VpcCidrBlockState{
-												State: awssdk.String(ec2sdk.VpcCidrBlockStateCodeAssociated),
+											CidrBlockState: &ec2types.VpcCidrBlockState{
+												State: ec2types.VpcCidrBlockStateCodeAssociated,
 											},
 										},
 									},
@@ -232,11 +234,11 @@ func Test_defaultVPCInfoProvider_FetchVPCInfo(t *testing.T) {
 					vpcID: "vpc-2f09a348",
 					want: VPCInfo{
 						VpcId: awssdk.String("vpc-2f09a348"),
-						CidrBlockAssociationSet: []*ec2sdk.VpcCidrBlockAssociation{
+						CidrBlockAssociationSet: []ec2types.VpcCidrBlockAssociation{
 							{
 								CidrBlock: awssdk.String("192.168.0.0/16"),
-								CidrBlockState: &ec2sdk.VpcCidrBlockState{
-									State: awssdk.String(ec2sdk.VpcCidrBlockStateCodeAssociated),
+								CidrBlockState: &ec2types.VpcCidrBlockState{
+									State: ec2types.VpcCidrBlockStateCodeAssociated,
 								},
 							},
 						},
@@ -246,11 +248,11 @@ func Test_defaultVPCInfoProvider_FetchVPCInfo(t *testing.T) {
 					vpcID: "vpc-2f09a842",
 					want: VPCInfo{
 						VpcId: awssdk.String("vpc-2f09a842"),
-						CidrBlockAssociationSet: []*ec2sdk.VpcCidrBlockAssociation{
+						CidrBlockAssociationSet: []ec2types.VpcCidrBlockAssociation{
 							{
 								CidrBlock: awssdk.String("10.100.0.0/16"),
-								CidrBlockState: &ec2sdk.VpcCidrBlockState{
-									State: awssdk.String(ec2sdk.VpcCidrBlockStateCodeAssociated),
+								CidrBlockState: &ec2types.VpcCidrBlockState{
+									State: ec2types.VpcCidrBlockStateCodeAssociated,
 								},
 							},
 						},
@@ -260,11 +262,11 @@ func Test_defaultVPCInfoProvider_FetchVPCInfo(t *testing.T) {
 					vpcID: "vpc-2f09a348",
 					want: VPCInfo{
 						VpcId: awssdk.String("vpc-2f09a348"),
-						CidrBlockAssociationSet: []*ec2sdk.VpcCidrBlockAssociation{
+						CidrBlockAssociationSet: []ec2types.VpcCidrBlockAssociation{
 							{
 								CidrBlock: awssdk.String("192.168.0.0/16"),
-								CidrBlockState: &ec2sdk.VpcCidrBlockState{
-									State: awssdk.String(ec2sdk.VpcCidrBlockStateCodeAssociated),
+								CidrBlockState: &ec2types.VpcCidrBlockState{
+									State: ec2types.VpcCidrBlockStateCodeAssociated,
 								},
 							},
 						},
@@ -274,11 +276,11 @@ func Test_defaultVPCInfoProvider_FetchVPCInfo(t *testing.T) {
 					vpcID: "vpc-2f09a842",
 					want: VPCInfo{
 						VpcId: awssdk.String("vpc-2f09a842"),
-						CidrBlockAssociationSet: []*ec2sdk.VpcCidrBlockAssociation{
+						CidrBlockAssociationSet: []ec2types.VpcCidrBlockAssociation{
 							{
 								CidrBlock: awssdk.String("10.100.0.0/16"),
-								CidrBlockState: &ec2sdk.VpcCidrBlockState{
-									State: awssdk.String(ec2sdk.VpcCidrBlockStateCodeAssociated),
+								CidrBlockState: &ec2types.VpcCidrBlockState{
+									State: ec2types.VpcCidrBlockStateCodeAssociated,
 								},
 							},
 						},
@@ -298,7 +300,7 @@ func Test_defaultVPCInfoProvider_FetchVPCInfo(t *testing.T) {
 				ec2Client.EXPECT().DescribeVpcsWithContext(gomock.Any(), call.req).Return(call.resp, call.err)
 			}
 
-			p := NewDefaultVPCInfoProvider(ec2Client, logr.Discard())
+			p := NewDefaultVPCInfoProvider(ec2Client, logr.New(&log.NullLogSink{}))
 			for _, call := range tt.fetchVPCInfoCalls {
 				got, err := p.FetchVPCInfo(context.Background(), call.vpcID, call.opts...)
 				if call.wantErr != nil {
@@ -337,17 +339,17 @@ func Test_defaultVPCInfoProvider_fetchVPCInfoFromAWS(t *testing.T) {
 				describeVpcsCalls: []describeVpcsCall{
 					{
 						req: &ec2sdk.DescribeVpcsInput{
-							VpcIds: awssdk.StringSlice([]string{"vpc-2f09a348"}),
+							VpcIds: []string{"vpc-2f09a348"},
 						},
 						resp: &ec2sdk.DescribeVpcsOutput{
-							Vpcs: []*ec2sdk.Vpc{
+							Vpcs: []ec2types.Vpc{
 								{
 									VpcId: awssdk.String("vpc-2f09a348"),
-									CidrBlockAssociationSet: []*ec2sdk.VpcCidrBlockAssociation{
+									CidrBlockAssociationSet: []ec2types.VpcCidrBlockAssociation{
 										{
 											CidrBlock: awssdk.String("192.168.0.0/16"),
-											CidrBlockState: &ec2sdk.VpcCidrBlockState{
-												State: awssdk.String(ec2sdk.VpcCidrBlockStateCodeAssociated),
+											CidrBlockState: &ec2types.VpcCidrBlockState{
+												State: ec2types.VpcCidrBlockStateCodeAssociated,
 											},
 										},
 									},
@@ -362,11 +364,11 @@ func Test_defaultVPCInfoProvider_fetchVPCInfoFromAWS(t *testing.T) {
 			},
 			want: VPCInfo{
 				VpcId: awssdk.String("vpc-2f09a348"),
-				CidrBlockAssociationSet: []*ec2sdk.VpcCidrBlockAssociation{
+				CidrBlockAssociationSet: []ec2types.VpcCidrBlockAssociation{
 					{
 						CidrBlock: awssdk.String("192.168.0.0/16"),
-						CidrBlockState: &ec2sdk.VpcCidrBlockState{
-							State: awssdk.String(ec2sdk.VpcCidrBlockStateCodeAssociated),
+						CidrBlockState: &ec2types.VpcCidrBlockState{
+							State: ec2types.VpcCidrBlockStateCodeAssociated,
 						},
 					},
 				},
@@ -378,7 +380,7 @@ func Test_defaultVPCInfoProvider_fetchVPCInfoFromAWS(t *testing.T) {
 				describeVpcsCalls: []describeVpcsCall{
 					{
 						req: &ec2sdk.DescribeVpcsInput{
-							VpcIds: awssdk.StringSlice([]string{"vpc-2f09a348"}),
+							VpcIds: []string{"vpc-2f09a348"},
 						},
 						err: errors.New("some error happened"),
 					},
@@ -402,7 +404,7 @@ func Test_defaultVPCInfoProvider_fetchVPCInfoFromAWS(t *testing.T) {
 
 			p := &defaultVPCInfoProvider{
 				ec2Client: ec2Client,
-				logger:    logr.Discard(),
+				logger:    logr.New(&log.NullLogSink{}),
 			}
 			got, err := p.fetchVPCInfoFromAWS(context.Background(), tt.args.vpcID)
 			if tt.wantErr != nil {
@@ -425,11 +427,11 @@ func TestVPCInfo_AssociatedIPv4CIDRs(t *testing.T) {
 			name: "single associated CIDR",
 			vpc: VPCInfo{
 				VpcId: awssdk.String("vpc-2f09a348"),
-				CidrBlockAssociationSet: []*ec2sdk.VpcCidrBlockAssociation{
+				CidrBlockAssociationSet: []ec2types.VpcCidrBlockAssociation{
 					{
 						CidrBlock: awssdk.String("192.168.0.0/16"),
-						CidrBlockState: &ec2sdk.VpcCidrBlockState{
-							State: awssdk.String(ec2sdk.VpcCidrBlockStateCodeAssociated),
+						CidrBlockState: &ec2types.VpcCidrBlockState{
+							State: ec2types.VpcCidrBlockStateCodeAssociated,
 						},
 					},
 				},
@@ -440,23 +442,23 @@ func TestVPCInfo_AssociatedIPv4CIDRs(t *testing.T) {
 			name: "multiple CIDRs",
 			vpc: VPCInfo{
 				VpcId: awssdk.String("vpc-2f09a348"),
-				CidrBlockAssociationSet: []*ec2sdk.VpcCidrBlockAssociation{
+				CidrBlockAssociationSet: []ec2types.VpcCidrBlockAssociation{
 					{
 						CidrBlock: awssdk.String("192.168.0.0/16"),
-						CidrBlockState: &ec2sdk.VpcCidrBlockState{
-							State: awssdk.String(ec2sdk.VpcCidrBlockStateCodeAssociated),
+						CidrBlockState: &ec2types.VpcCidrBlockState{
+							State: ec2types.VpcCidrBlockStateCodeAssociated,
 						},
 					},
 					{
 						CidrBlock: awssdk.String("10.100.0.0/16"),
-						CidrBlockState: &ec2sdk.VpcCidrBlockState{
-							State: awssdk.String(ec2sdk.VpcCidrBlockStateCodeDisassociated),
+						CidrBlockState: &ec2types.VpcCidrBlockState{
+							State: ec2types.VpcCidrBlockStateCodeDisassociated,
 						},
 					},
 					{
 						CidrBlock: awssdk.String("172.16.0.0/16"),
-						CidrBlockState: &ec2sdk.VpcCidrBlockState{
-							State: awssdk.String(ec2sdk.VpcCidrBlockStateCodeAssociated),
+						CidrBlockState: &ec2types.VpcCidrBlockState{
+							State: ec2types.VpcCidrBlockStateCodeAssociated,
 						},
 					},
 				},
@@ -482,11 +484,11 @@ func TestVPCInfo_AssociatedIPv6CIDRs(t *testing.T) {
 			name: "single associated CIDR",
 			vpc: VPCInfo{
 				VpcId: awssdk.String("vpc-2f09a348"),
-				Ipv6CidrBlockAssociationSet: []*ec2sdk.VpcIpv6CidrBlockAssociation{
+				Ipv6CidrBlockAssociationSet: []ec2types.VpcIpv6CidrBlockAssociation{
 					{
 						Ipv6CidrBlock: awssdk.String("2600:1f14:f8c:2700::/56"),
-						Ipv6CidrBlockState: &ec2sdk.VpcCidrBlockState{
-							State: awssdk.String(ec2sdk.VpcCidrBlockStateCodeAssociated),
+						Ipv6CidrBlockState: &ec2types.VpcCidrBlockState{
+							State: ec2types.VpcCidrBlockStateCodeAssociated,
 						},
 					},
 				},
@@ -497,23 +499,23 @@ func TestVPCInfo_AssociatedIPv6CIDRs(t *testing.T) {
 			name: "multiple CIDRs",
 			vpc: VPCInfo{
 				VpcId: awssdk.String("vpc-2f09a348"),
-				Ipv6CidrBlockAssociationSet: []*ec2sdk.VpcIpv6CidrBlockAssociation{
+				Ipv6CidrBlockAssociationSet: []ec2types.VpcIpv6CidrBlockAssociation{
 					{
 						Ipv6CidrBlock: awssdk.String("2600:1f14:f8c:2700::/56"),
-						Ipv6CidrBlockState: &ec2sdk.VpcCidrBlockState{
-							State: awssdk.String(ec2sdk.VpcCidrBlockStateCodeAssociated),
+						Ipv6CidrBlockState: &ec2types.VpcCidrBlockState{
+							State: ec2types.VpcCidrBlockStateCodeAssociated,
 						},
 					},
 					{
 						Ipv6CidrBlock: awssdk.String("2700:1f14:f8c:2700::/56"),
-						Ipv6CidrBlockState: &ec2sdk.VpcCidrBlockState{
-							State: awssdk.String(ec2sdk.VpcCidrBlockStateCodeDisassociated),
+						Ipv6CidrBlockState: &ec2types.VpcCidrBlockState{
+							State: ec2types.VpcCidrBlockStateCodeDisassociated,
 						},
 					},
 					{
 						Ipv6CidrBlock: awssdk.String("2800:1f14:f8c:2700::/56"),
-						Ipv6CidrBlockState: &ec2sdk.VpcCidrBlockState{
-							State: awssdk.String(ec2sdk.VpcCidrBlockStateCodeAssociated),
+						Ipv6CidrBlockState: &ec2types.VpcCidrBlockState{
+							State: ec2types.VpcCidrBlockStateCodeAssociated,
 						},
 					},
 				},

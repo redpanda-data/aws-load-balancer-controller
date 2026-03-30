@@ -4,9 +4,8 @@ import (
 	"errors"
 	"testing"
 
-	corev1 "k8s.io/api/core/v1"
-
 	"github.com/stretchr/testify/assert"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/selection"
@@ -125,6 +124,31 @@ func TestIsNodeSuitableAsTrafficProxy(t *testing.T) {
 							{
 								Key:   toBeDeletedByCATaint,
 								Value: "True",
+							},
+						},
+					},
+				},
+			},
+			want: false,
+		},
+		{
+			name: "node is ready but tainted with karpenter.sh/disrupted",
+			args: args{
+				node: &corev1.Node{
+					Status: corev1.NodeStatus{
+						Conditions: []corev1.NodeCondition{
+							{
+								Type:   corev1.NodeReady,
+								Status: corev1.ConditionTrue,
+							},
+						},
+					},
+					Spec: corev1.NodeSpec{
+						Unschedulable: false,
+						Taints: []corev1.Taint{
+							{
+								Key:    toBeDeletedByKarpenterTaint,
+								Effect: corev1.TaintEffectNoSchedule,
 							},
 						},
 					},

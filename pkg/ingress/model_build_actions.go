@@ -3,14 +3,16 @@ package ingress
 import (
 	"context"
 	"fmt"
-	awssdk "github.com/aws/aws-sdk-go/aws"
+	"strings"
+	"unicode"
+
+	awssdk "github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/model/core"
 	elbv2model "sigs.k8s.io/aws-load-balancer-controller/pkg/model/elbv2"
-	"strings"
-	"unicode"
+	"sigs.k8s.io/aws-load-balancer-controller/pkg/shared_constants"
 )
 
 func (t *defaultModelBuildTask) buildActions(ctx context.Context, protocol elbv2model.Protocol, ing ClassifiedIngress, backend EnhancedBackend) ([]elbv2model.Action, error) {
@@ -22,6 +24,19 @@ func (t *defaultModelBuildTask) buildActions(ctx context.Context, protocol elbv2
 		}
 		if authAction != nil {
 			actions = append(actions, *authAction)
+		}
+
+		jwtValidationAction, err := t.buildJwtValidationAction(ctx, backend.JwtValidationConfig)
+		if err != nil {
+			return nil, err
+		}
+		if jwtValidationAction != nil {
+			actions = append(actions, *jwtValidationAction)
+		}
+
+		// Auth and jwt validation can't be set at the same time, validate to ensure both aren't set
+		if authAction != nil && jwtValidationAction != nil {
+			return nil, errors.Errorf("authentication and jwt validation can't both be configured")
 		}
 	}
 	backendAction, err := t.buildBackendAction(ctx, ing, backend.Action)
@@ -105,10 +120,16 @@ func (t *defaultModelBuildTask) buildForwardAction(ctx context.Context, ing Clas
 		var tgARN core.StringToken
 		if tgt.TargetGroupARN != nil {
 			tgARN = core.LiteralStringToken(*tgt.TargetGroupARN)
+		} else if tgt.TargetGroupName != nil {
+			targetGroupARN, err := t.targetGroupNameToArnMapper.GetArnByName(ctx, *tgt.TargetGroupName)
+			if err != nil {
+				return elbv2model.Action{}, fmt.Errorf("searching TargetGroup with name %s: %w", *tgt.TargetGroupName, err)
+			}
+			tgARN = core.LiteralStringToken(targetGroupARN)
 		} else {
 			svcKey := types.NamespacedName{
 				Namespace: ing.Ing.Namespace,
-				Name:      awssdk.StringValue(tgt.ServiceName),
+				Name:      awssdk.ToString(tgt.ServiceName),
 			}
 			svc := t.backendServices[svcKey]
 			tg, err := t.buildTargetGroup(ctx, ing, svc, *tgt.ServicePort)
@@ -151,7 +172,7 @@ func (t *defaultModelBuildTask) buildAuthenticateCognitoAction(_ context.Context
 			UserPoolClientID:                 authCfg.IDPConfigCognito.UserPoolClientID,
 			UserPoolDomain:                   authCfg.IDPConfigCognito.UserPoolDomain,
 			AuthenticationRequestExtraParams: authCfg.IDPConfigCognito.AuthenticationRequestExtraParams,
-			OnUnauthenticatedRequest:         &onUnauthenticatedRequest,
+			OnUnauthenticatedRequest:         onUnauthenticatedRequest,
 			Scope:                            &authCfg.Scope,
 			SessionCookieName:                &authCfg.SessionCookieName,
 			SessionTimeout:                   &authCfg.SessionTimeout,
@@ -172,22 +193,22 @@ func (t *defaultModelBuildTask) buildAuthenticateOIDCAction(ctx context.Context,
 	if err := t.k8sClient.Get(ctx, secretKey, secret); err != nil {
 		return elbv2model.Action{}, err
 	}
-	rawClientID, ok := secret.Data["clientID"]
+	rawClientID, ok := secret.Data[shared_constants.OIDCSecretKeyClientID]
 	// AWSALBIngressController looks for clientId, we should be backwards-compatible here.
 	if !ok {
-		rawClientID, ok = secret.Data["clientId"]
+		rawClientID, ok = secret.Data[shared_constants.OIDCSecretKeyClientIDLegacy]
 	}
 	if !ok {
 		return elbv2model.Action{}, errors.Errorf("missing clientID, secret: %v", secretKey)
 	}
-	rawClientSecret, ok := secret.Data["clientSecret"]
+	rawClientSecret, ok := secret.Data[shared_constants.OIDCSecretKeyClientSecret]
 	if !ok {
 		return elbv2model.Action{}, errors.Errorf("missing clientSecret, secret: %v", secretKey)
 	}
 
 	t.secretKeys = append(t.secretKeys, secretKey)
 	clientID := strings.TrimRightFunc(string(rawClientID), unicode.IsSpace)
-	clientSecret := string(rawClientSecret)
+	clientSecret := strings.TrimRightFunc(string(rawClientSecret), unicode.IsControl)
 	return elbv2model.Action{
 		Type: elbv2model.ActionTypeAuthenticateOIDC,
 		AuthenticateOIDCConfig: &elbv2model.AuthenticateOIDCActionConfig{
@@ -198,10 +219,35 @@ func (t *defaultModelBuildTask) buildAuthenticateOIDCAction(ctx context.Context,
 			ClientID:                         clientID,
 			ClientSecret:                     clientSecret,
 			AuthenticationRequestExtraParams: authCfg.IDPConfigOIDC.AuthenticationRequestExtraParams,
-			OnUnauthenticatedRequest:         &onUnauthenticatedRequest,
+			OnUnauthenticatedRequest:         onUnauthenticatedRequest,
 			Scope:                            &authCfg.Scope,
 			SessionCookieName:                &authCfg.SessionCookieName,
 			SessionTimeout:                   &authCfg.SessionTimeout,
+		},
+	}, nil
+}
+
+// Build JWT validation config Action model from enhanced backend
+func (t *defaultModelBuildTask) buildJwtValidationAction(_ context.Context, jwtValidationConfig *JwtValidationConfig) (*elbv2model.Action, error) {
+	if jwtValidationConfig == nil {
+		return nil, nil
+	}
+
+	var additionalClaims []elbv2model.JwtAdditionalClaim
+	for _, additionalClaim := range jwtValidationConfig.AdditionalClaims {
+		additionalClaims = append(additionalClaims, elbv2model.JwtAdditionalClaim{
+			Format: elbv2model.JwtAdditionalClaimFormat(additionalClaim.Format),
+			Name:   additionalClaim.Name,
+			Values: append([]string{}, additionalClaim.Values...),
+		})
+	}
+
+	return &elbv2model.Action{
+		Type: elbv2model.ActionTypeJwtValidation,
+		JwtValidationConfig: &elbv2model.JwtValidationConfig{
+			JwksEndpoint:     jwtValidationConfig.JwksEndpoint,
+			Issuer:           jwtValidationConfig.Issuer,
+			AdditionalClaims: additionalClaims,
 		},
 	}, nil
 }

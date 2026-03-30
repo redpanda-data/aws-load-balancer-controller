@@ -12,3 +12,22 @@ func NamespacedName(obj metav1.Object) types.NamespacedName {
 		Name:      obj.GetName(),
 	}
 }
+
+// ToSliceOfNamespacedNames gets the slice of types.NamespacedName from the input slice s
+func ToSliceOfNamespacedNames[T metav1.ObjectMetaAccessor](s []T) []types.NamespacedName {
+	result := make([]types.NamespacedName, len(s))
+	for i, v := range s {
+		result[i] = NamespacedName(v.GetObjectMeta())
+	}
+	return result
+}
+
+// IsResourceKindAvailable checks whether specific kind is available.
+func IsResourceKindAvailable(resList *metav1.APIResourceList, kind string) bool {
+	for _, res := range resList.APIResources {
+		if res.Kind == kind {
+			return true
+		}
+	}
+	return false
+}

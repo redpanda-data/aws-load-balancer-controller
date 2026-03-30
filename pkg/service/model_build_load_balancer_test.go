@@ -5,13 +5,15 @@ import (
 	"errors"
 	"testing"
 
-	elbv2sdk "github.com/aws/aws-sdk-go/service/elbv2"
+	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	elbv2types "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2/types"
+	"sigs.k8s.io/aws-load-balancer-controller/pkg/shared_constants"
+
 	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/model/core"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/networking"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
@@ -22,8 +24,6 @@ import (
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/deploy/tracking"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/model/elbv2"
 )
-
-const lbAttrsDeletionProtectionEnabled = "deletion_protection.enabled"
 
 func Test_defaultModelBuilderTask_buildLBAttributes(t *testing.T) {
 	tests := []struct {
@@ -77,7 +77,7 @@ func Test_defaultModelBuilderTask_buildLBAttributes(t *testing.T) {
 					Value: "true",
 				},
 				{
-					Key:   lbAttrsDeletionProtectionEnabled,
+					Key:   shared_constants.LBAttributeDeletionProtection,
 					Value: "true",
 				},
 			},
@@ -88,7 +88,7 @@ func Test_defaultModelBuilderTask_buildLBAttributes(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{
 						"service.beta.kubernetes.io/aws-load-balancer-attributes": "access_logs.s3.enabled=true,access_logs.s3.bucket=nlb-bucket," +
-							"access_logs.s3.prefix=bkt-pfx,load_balancing.cross_zone.enabled=true,deletion_protection.enabled=true",
+							"access_logs.s3.prefix=bkt-pfx,load_balancing.cross_zone.enabled=true,deletion_protection.enabled=true,dns_record.client_routing_policy=availability_zone_affinity",
 					},
 				},
 			},
@@ -111,8 +111,12 @@ func Test_defaultModelBuilderTask_buildLBAttributes(t *testing.T) {
 					Value: "true",
 				},
 				{
-					Key:   lbAttrsDeletionProtectionEnabled,
+					Key:   shared_constants.LBAttributeDeletionProtection,
 					Value: "true",
+				},
+				{
+					Key:   lbAttrsLoadBalancingDnsClientRoutingPolicy,
+					Value: availabilityZoneAffinity,
 				},
 			},
 		},
@@ -177,7 +181,7 @@ func Test_defaultModelBuilderTask_buildLBAttributes(t *testing.T) {
 				defaultLoadBalancingCrossZoneEnabled: false,
 				defaultProxyProtocolV2Enabled:        false,
 				defaultHealthCheckProtocol:           elbv2.ProtocolTCP,
-				defaultHealthCheckPort:               healthCheckPortTrafficPort,
+				defaultHealthCheckPort:               shared_constants.HealthCheckPortTrafficPort,
 				defaultHealthCheckPath:               "/",
 				defaultHealthCheckInterval:           10,
 				defaultHealthCheckTimeout:            10,
@@ -196,19 +200,20 @@ func Test_defaultModelBuilderTask_buildLBAttributes(t *testing.T) {
 
 func Test_defaultModelBuilderTask_buildSubnetMappings(t *testing.T) {
 	tests := []struct {
-		name          string
-		ipAddressType elbv2.IPAddressType
-		scheme        elbv2.LoadBalancerScheme
-		subnets       []*ec2.Subnet
-		want          []elbv2.SubnetMapping
-		svc           *corev1.Service
-		wantErr       error
+		name                         string
+		ipAddressType                elbv2.IPAddressType
+		enablePrefixForIpv6SourceNat elbv2.EnablePrefixForIpv6SourceNat
+		scheme                       elbv2.LoadBalancerScheme
+		subnets                      []ec2types.Subnet
+		want                         []elbv2.SubnetMapping
+		svc                          *corev1.Service
+		wantErr                      error
 	}{
 		{
 			name:          "ipv4 - with auto-assigned addresses",
 			ipAddressType: elbv2.IPAddressTypeIPV4,
 			scheme:        elbv2.LoadBalancerSchemeInternetFacing,
-			subnets: []*ec2.Subnet{
+			subnets: []ec2types.Subnet{
 				{
 					SubnetId:         aws.String("subnet-1"),
 					AvailabilityZone: aws.String("us-west-2a"),
@@ -236,7 +241,7 @@ func Test_defaultModelBuilderTask_buildSubnetMappings(t *testing.T) {
 			name:          "ipv4 - with EIP allocation",
 			ipAddressType: elbv2.IPAddressTypeIPV4,
 			scheme:        elbv2.LoadBalancerSchemeInternetFacing,
-			subnets: []*ec2.Subnet{
+			subnets: []ec2types.Subnet{
 				{
 					SubnetId:         aws.String("subnet-1"),
 					AvailabilityZone: aws.String("us-west-2a"),
@@ -272,7 +277,7 @@ func Test_defaultModelBuilderTask_buildSubnetMappings(t *testing.T) {
 			name:          "ipv4 - with EIP allocation: on internal load balancer",
 			ipAddressType: elbv2.IPAddressTypeIPV4,
 			scheme:        elbv2.LoadBalancerSchemeInternal,
-			subnets: []*ec2.Subnet{
+			subnets: []ec2types.Subnet{
 				{
 					SubnetId:         aws.String("subnet-1"),
 					AvailabilityZone: aws.String("us-west-2a"),
@@ -299,7 +304,7 @@ func Test_defaultModelBuilderTask_buildSubnetMappings(t *testing.T) {
 			name:          "ipv4 - with EIP allocation: subnet count mismatch",
 			ipAddressType: elbv2.IPAddressTypeIPV4,
 			scheme:        elbv2.LoadBalancerSchemeInternetFacing,
-			subnets: []*ec2.Subnet{
+			subnets: []ec2types.Subnet{
 				{
 					SubnetId:         aws.String("subnet-1"),
 					AvailabilityZone: aws.String("us-west-2a"),
@@ -326,7 +331,7 @@ func Test_defaultModelBuilderTask_buildSubnetMappings(t *testing.T) {
 			name:          "ipv4 - with PrivateIPv4Address",
 			ipAddressType: elbv2.IPAddressTypeIPV4,
 			scheme:        elbv2.LoadBalancerSchemeInternal,
-			subnets: []*ec2.Subnet{
+			subnets: []ec2types.Subnet{
 				{
 					SubnetId:         aws.String("subnet-1"),
 					AvailabilityZone: aws.String("us-west-2a"),
@@ -362,7 +367,7 @@ func Test_defaultModelBuilderTask_buildSubnetMappings(t *testing.T) {
 			name:          "ipv4 - with PrivateIPv4Address: on internet-facing load balancer",
 			ipAddressType: elbv2.IPAddressTypeIPV4,
 			scheme:        elbv2.LoadBalancerSchemeInternetFacing,
-			subnets: []*ec2.Subnet{
+			subnets: []ec2types.Subnet{
 				{
 					SubnetId:         aws.String("subnet-1"),
 					AvailabilityZone: aws.String("us-west-2a"),
@@ -389,7 +394,7 @@ func Test_defaultModelBuilderTask_buildSubnetMappings(t *testing.T) {
 			name:          "ipv4 - with PrivateIpv4Addresses: subnet count mismatch",
 			ipAddressType: elbv2.IPAddressTypeIPV4,
 			scheme:        elbv2.LoadBalancerSchemeInternal,
-			subnets: []*ec2.Subnet{
+			subnets: []ec2types.Subnet{
 				{
 					SubnetId:         aws.String("subnet-1"),
 					AvailabilityZone: aws.String("us-west-2a"),
@@ -414,7 +419,7 @@ func Test_defaultModelBuilderTask_buildSubnetMappings(t *testing.T) {
 			name:          "ipv4 - with PrivateIPv4Address: no matching IP for subnets",
 			ipAddressType: elbv2.IPAddressTypeIPV4,
 			scheme:        elbv2.LoadBalancerSchemeInternal,
-			subnets: []*ec2.Subnet{
+			subnets: []ec2types.Subnet{
 				{
 					SubnetId:         aws.String("subnet-1"),
 					AvailabilityZone: aws.String("us-west-2a"),
@@ -441,7 +446,7 @@ func Test_defaultModelBuilderTask_buildSubnetMappings(t *testing.T) {
 			name:          "ipv4 - with PrivateIPv4Address",
 			ipAddressType: elbv2.IPAddressTypeIPV4,
 			scheme:        elbv2.LoadBalancerSchemeInternal,
-			subnets: []*ec2.Subnet{
+			subnets: []ec2types.Subnet{
 				{
 					SubnetId:         aws.String("subnet-1"),
 					AvailabilityZone: aws.String("us-west-2a"),
@@ -477,7 +482,7 @@ func Test_defaultModelBuilderTask_buildSubnetMappings(t *testing.T) {
 			name:          "ipv4 - with PrivateIPv4Address: invalid ip format",
 			ipAddressType: elbv2.IPAddressTypeIPV4,
 			scheme:        elbv2.LoadBalancerSchemeInternal,
-			subnets: []*ec2.Subnet{
+			subnets: []ec2types.Subnet{
 				{
 					SubnetId:         aws.String("subnet-1"),
 					AvailabilityZone: aws.String("us-west-2a"),
@@ -504,7 +509,7 @@ func Test_defaultModelBuilderTask_buildSubnetMappings(t *testing.T) {
 			name:          "ipv4 - with PrivateIPv4Address: invalid ipv4 format",
 			ipAddressType: elbv2.IPAddressTypeIPV4,
 			scheme:        elbv2.LoadBalancerSchemeInternal,
-			subnets: []*ec2.Subnet{
+			subnets: []ec2types.Subnet{
 				{
 					SubnetId:         aws.String("subnet-1"),
 					AvailabilityZone: aws.String("us-west-2a"),
@@ -531,17 +536,17 @@ func Test_defaultModelBuilderTask_buildSubnetMappings(t *testing.T) {
 			name:          "dualstack - with IPv6Addresses",
 			ipAddressType: elbv2.IPAddressTypeDualStack,
 			scheme:        elbv2.LoadBalancerSchemeInternetFacing,
-			subnets: []*ec2.Subnet{
+			subnets: []ec2types.Subnet{
 				{
 					SubnetId:         aws.String("subnet-1"),
 					AvailabilityZone: aws.String("us-west-2a"),
 					VpcId:            aws.String("vpc-1"),
 					CidrBlock:        aws.String("192.168.1.0/24"),
-					Ipv6CidrBlockAssociationSet: []*ec2.SubnetIpv6CidrBlockAssociation{
+					Ipv6CidrBlockAssociationSet: []ec2types.SubnetIpv6CidrBlockAssociation{
 						{
 							Ipv6CidrBlock: aws.String("2600:1f13:837:8500::/64"),
-							Ipv6CidrBlockState: &ec2.SubnetCidrBlockState{
-								State: aws.String(ec2.SubnetCidrBlockStateCodeAssociated),
+							Ipv6CidrBlockState: &ec2types.SubnetCidrBlockState{
+								State: ec2types.SubnetCidrBlockStateCodeAssociated,
 							},
 						},
 					},
@@ -551,11 +556,11 @@ func Test_defaultModelBuilderTask_buildSubnetMappings(t *testing.T) {
 					AvailabilityZone: aws.String("us-west-2b"),
 					VpcId:            aws.String("vpc-1"),
 					CidrBlock:        aws.String("192.168.2.0/24"),
-					Ipv6CidrBlockAssociationSet: []*ec2.SubnetIpv6CidrBlockAssociation{
+					Ipv6CidrBlockAssociationSet: []ec2types.SubnetIpv6CidrBlockAssociation{
 						{
 							Ipv6CidrBlock: aws.String("2600:1f13:837:8504::/64"),
-							Ipv6CidrBlockState: &ec2.SubnetCidrBlockState{
-								State: aws.String(ec2.SubnetCidrBlockStateCodeAssociated),
+							Ipv6CidrBlockState: &ec2types.SubnetCidrBlockState{
+								State: ec2types.SubnetCidrBlockStateCodeAssociated,
 							},
 						},
 					},
@@ -583,17 +588,17 @@ func Test_defaultModelBuilderTask_buildSubnetMappings(t *testing.T) {
 			name:          "dualstack - with IPv6Addresses: on a ipv4 load balancer",
 			ipAddressType: elbv2.IPAddressTypeIPV4,
 			scheme:        elbv2.LoadBalancerSchemeInternetFacing,
-			subnets: []*ec2.Subnet{
+			subnets: []ec2types.Subnet{
 				{
 					SubnetId:         aws.String("subnet-1"),
 					AvailabilityZone: aws.String("us-west-2a"),
 					VpcId:            aws.String("vpc-1"),
 					CidrBlock:        aws.String("192.168.1.0/24"),
-					Ipv6CidrBlockAssociationSet: []*ec2.SubnetIpv6CidrBlockAssociation{
+					Ipv6CidrBlockAssociationSet: []ec2types.SubnetIpv6CidrBlockAssociation{
 						{
 							Ipv6CidrBlock: aws.String("2600:1f13:837:8500::/64"),
-							Ipv6CidrBlockState: &ec2.SubnetCidrBlockState{
-								State: aws.String(ec2.SubnetCidrBlockStateCodeAssociated),
+							Ipv6CidrBlockState: &ec2types.SubnetCidrBlockState{
+								State: ec2types.SubnetCidrBlockStateCodeAssociated,
 							},
 						},
 					},
@@ -603,11 +608,11 @@ func Test_defaultModelBuilderTask_buildSubnetMappings(t *testing.T) {
 					AvailabilityZone: aws.String("us-west-2b"),
 					VpcId:            aws.String("vpc-1"),
 					CidrBlock:        aws.String("192.168.2.0/24"),
-					Ipv6CidrBlockAssociationSet: []*ec2.SubnetIpv6CidrBlockAssociation{
+					Ipv6CidrBlockAssociationSet: []ec2types.SubnetIpv6CidrBlockAssociation{
 						{
 							Ipv6CidrBlock: aws.String("2600:1f13:837:8504::/64"),
-							Ipv6CidrBlockState: &ec2.SubnetCidrBlockState{
-								State: aws.String(ec2.SubnetCidrBlockStateCodeAssociated),
+							Ipv6CidrBlockState: &ec2types.SubnetCidrBlockState{
+								State: ec2types.SubnetCidrBlockStateCodeAssociated,
 							},
 						},
 					},
@@ -626,17 +631,17 @@ func Test_defaultModelBuilderTask_buildSubnetMappings(t *testing.T) {
 			name:          "dualstack - with IPv6Addresses: subnet count mismatch",
 			ipAddressType: elbv2.IPAddressTypeDualStack,
 			scheme:        elbv2.LoadBalancerSchemeInternetFacing,
-			subnets: []*ec2.Subnet{
+			subnets: []ec2types.Subnet{
 				{
 					SubnetId:         aws.String("subnet-1"),
 					AvailabilityZone: aws.String("us-west-2a"),
 					VpcId:            aws.String("vpc-1"),
 					CidrBlock:        aws.String("192.168.1.0/24"),
-					Ipv6CidrBlockAssociationSet: []*ec2.SubnetIpv6CidrBlockAssociation{
+					Ipv6CidrBlockAssociationSet: []ec2types.SubnetIpv6CidrBlockAssociation{
 						{
 							Ipv6CidrBlock: aws.String("2600:1f13:837:8500::/64"),
-							Ipv6CidrBlockState: &ec2.SubnetCidrBlockState{
-								State: aws.String(ec2.SubnetCidrBlockStateCodeAssociated),
+							Ipv6CidrBlockState: &ec2types.SubnetCidrBlockState{
+								State: ec2types.SubnetCidrBlockStateCodeAssociated,
 							},
 						},
 					},
@@ -646,11 +651,11 @@ func Test_defaultModelBuilderTask_buildSubnetMappings(t *testing.T) {
 					AvailabilityZone: aws.String("us-west-2b"),
 					VpcId:            aws.String("vpc-1"),
 					CidrBlock:        aws.String("192.168.2.0/24"),
-					Ipv6CidrBlockAssociationSet: []*ec2.SubnetIpv6CidrBlockAssociation{
+					Ipv6CidrBlockAssociationSet: []ec2types.SubnetIpv6CidrBlockAssociation{
 						{
 							Ipv6CidrBlock: aws.String("2600:1f13:837:8504::/64"),
-							Ipv6CidrBlockState: &ec2.SubnetCidrBlockState{
-								State: aws.String(ec2.SubnetCidrBlockStateCodeAssociated),
+							Ipv6CidrBlockState: &ec2types.SubnetCidrBlockState{
+								State: ec2types.SubnetCidrBlockStateCodeAssociated,
 							},
 						},
 					},
@@ -669,17 +674,17 @@ func Test_defaultModelBuilderTask_buildSubnetMappings(t *testing.T) {
 			name:          "dualstack - with IPv6Addresses: no matching IP for subnets",
 			ipAddressType: elbv2.IPAddressTypeDualStack,
 			scheme:        elbv2.LoadBalancerSchemeInternetFacing,
-			subnets: []*ec2.Subnet{
+			subnets: []ec2types.Subnet{
 				{
 					SubnetId:         aws.String("subnet-1"),
 					AvailabilityZone: aws.String("us-west-2a"),
 					VpcId:            aws.String("vpc-1"),
 					CidrBlock:        aws.String("192.168.1.0/24"),
-					Ipv6CidrBlockAssociationSet: []*ec2.SubnetIpv6CidrBlockAssociation{
+					Ipv6CidrBlockAssociationSet: []ec2types.SubnetIpv6CidrBlockAssociation{
 						{
 							Ipv6CidrBlock: aws.String("2600:1f13:837:8500::/64"),
-							Ipv6CidrBlockState: &ec2.SubnetCidrBlockState{
-								State: aws.String(ec2.SubnetCidrBlockStateCodeAssociated),
+							Ipv6CidrBlockState: &ec2types.SubnetCidrBlockState{
+								State: ec2types.SubnetCidrBlockStateCodeAssociated,
 							},
 						},
 					},
@@ -689,11 +694,11 @@ func Test_defaultModelBuilderTask_buildSubnetMappings(t *testing.T) {
 					AvailabilityZone: aws.String("us-west-2b"),
 					VpcId:            aws.String("vpc-1"),
 					CidrBlock:        aws.String("192.168.2.0/24"),
-					Ipv6CidrBlockAssociationSet: []*ec2.SubnetIpv6CidrBlockAssociation{
+					Ipv6CidrBlockAssociationSet: []ec2types.SubnetIpv6CidrBlockAssociation{
 						{
 							Ipv6CidrBlock: aws.String("2600:1f13:837:8504::/64"),
-							Ipv6CidrBlockState: &ec2.SubnetCidrBlockState{
-								State: aws.String(ec2.SubnetCidrBlockStateCodeAssociated),
+							Ipv6CidrBlockState: &ec2types.SubnetCidrBlockState{
+								State: ec2types.SubnetCidrBlockStateCodeAssociated,
 							},
 						},
 					},
@@ -712,17 +717,17 @@ func Test_defaultModelBuilderTask_buildSubnetMappings(t *testing.T) {
 			name:          "dualstack - with IPv6Addresses: invalid IP format",
 			ipAddressType: elbv2.IPAddressTypeDualStack,
 			scheme:        elbv2.LoadBalancerSchemeInternetFacing,
-			subnets: []*ec2.Subnet{
+			subnets: []ec2types.Subnet{
 				{
 					SubnetId:         aws.String("subnet-1"),
 					AvailabilityZone: aws.String("us-west-2a"),
 					VpcId:            aws.String("vpc-1"),
 					CidrBlock:        aws.String("192.168.1.0/24"),
-					Ipv6CidrBlockAssociationSet: []*ec2.SubnetIpv6CidrBlockAssociation{
+					Ipv6CidrBlockAssociationSet: []ec2types.SubnetIpv6CidrBlockAssociation{
 						{
 							Ipv6CidrBlock: aws.String("2600:1f13:837:8500::/64"),
-							Ipv6CidrBlockState: &ec2.SubnetCidrBlockState{
-								State: aws.String(ec2.SubnetCidrBlockStateCodeAssociated),
+							Ipv6CidrBlockState: &ec2types.SubnetCidrBlockState{
+								State: ec2types.SubnetCidrBlockStateCodeAssociated,
 							},
 						},
 					},
@@ -732,11 +737,11 @@ func Test_defaultModelBuilderTask_buildSubnetMappings(t *testing.T) {
 					AvailabilityZone: aws.String("us-west-2b"),
 					VpcId:            aws.String("vpc-1"),
 					CidrBlock:        aws.String("192.168.2.0/24"),
-					Ipv6CidrBlockAssociationSet: []*ec2.SubnetIpv6CidrBlockAssociation{
+					Ipv6CidrBlockAssociationSet: []ec2types.SubnetIpv6CidrBlockAssociation{
 						{
 							Ipv6CidrBlock: aws.String("2600:1f13:837:8504::/64"),
-							Ipv6CidrBlockState: &ec2.SubnetCidrBlockState{
-								State: aws.String(ec2.SubnetCidrBlockStateCodeAssociated),
+							Ipv6CidrBlockState: &ec2types.SubnetCidrBlockState{
+								State: ec2types.SubnetCidrBlockStateCodeAssociated,
 							},
 						},
 					},
@@ -755,17 +760,17 @@ func Test_defaultModelBuilderTask_buildSubnetMappings(t *testing.T) {
 			name:          "dualstack - with IPv6Addresses: invalid IP format",
 			ipAddressType: elbv2.IPAddressTypeDualStack,
 			scheme:        elbv2.LoadBalancerSchemeInternetFacing,
-			subnets: []*ec2.Subnet{
+			subnets: []ec2types.Subnet{
 				{
 					SubnetId:         aws.String("subnet-1"),
 					AvailabilityZone: aws.String("us-west-2a"),
 					VpcId:            aws.String("vpc-1"),
 					CidrBlock:        aws.String("192.168.1.0/24"),
-					Ipv6CidrBlockAssociationSet: []*ec2.SubnetIpv6CidrBlockAssociation{
+					Ipv6CidrBlockAssociationSet: []ec2types.SubnetIpv6CidrBlockAssociation{
 						{
 							Ipv6CidrBlock: aws.String("2600:1f13:837:8500::/64"),
-							Ipv6CidrBlockState: &ec2.SubnetCidrBlockState{
-								State: aws.String(ec2.SubnetCidrBlockStateCodeAssociated),
+							Ipv6CidrBlockState: &ec2types.SubnetCidrBlockState{
+								State: ec2types.SubnetCidrBlockStateCodeAssociated,
 							},
 						},
 					},
@@ -775,11 +780,11 @@ func Test_defaultModelBuilderTask_buildSubnetMappings(t *testing.T) {
 					AvailabilityZone: aws.String("us-west-2b"),
 					VpcId:            aws.String("vpc-1"),
 					CidrBlock:        aws.String("192.168.2.0/24"),
-					Ipv6CidrBlockAssociationSet: []*ec2.SubnetIpv6CidrBlockAssociation{
+					Ipv6CidrBlockAssociationSet: []ec2types.SubnetIpv6CidrBlockAssociation{
 						{
 							Ipv6CidrBlock: aws.String("2600:1f13:837:8504::/64"),
-							Ipv6CidrBlockState: &ec2.SubnetCidrBlockState{
-								State: aws.String(ec2.SubnetCidrBlockStateCodeAssociated),
+							Ipv6CidrBlockState: &ec2types.SubnetCidrBlockState{
+								State: ec2types.SubnetCidrBlockStateCodeAssociated,
 							},
 						},
 					},
@@ -798,17 +803,17 @@ func Test_defaultModelBuilderTask_buildSubnetMappings(t *testing.T) {
 			name:          "dualstack - with EIPAllocation and IPv6Addresses",
 			ipAddressType: elbv2.IPAddressTypeDualStack,
 			scheme:        elbv2.LoadBalancerSchemeInternetFacing,
-			subnets: []*ec2.Subnet{
+			subnets: []ec2types.Subnet{
 				{
 					SubnetId:         aws.String("subnet-1"),
 					AvailabilityZone: aws.String("us-west-2a"),
 					VpcId:            aws.String("vpc-1"),
 					CidrBlock:        aws.String("192.168.1.0/24"),
-					Ipv6CidrBlockAssociationSet: []*ec2.SubnetIpv6CidrBlockAssociation{
+					Ipv6CidrBlockAssociationSet: []ec2types.SubnetIpv6CidrBlockAssociation{
 						{
 							Ipv6CidrBlock: aws.String("2600:1f13:837:8500::/64"),
-							Ipv6CidrBlockState: &ec2.SubnetCidrBlockState{
-								State: aws.String(ec2.SubnetCidrBlockStateCodeAssociated),
+							Ipv6CidrBlockState: &ec2types.SubnetCidrBlockState{
+								State: ec2types.SubnetCidrBlockStateCodeAssociated,
 							},
 						},
 					},
@@ -818,11 +823,11 @@ func Test_defaultModelBuilderTask_buildSubnetMappings(t *testing.T) {
 					AvailabilityZone: aws.String("us-west-2b"),
 					VpcId:            aws.String("vpc-1"),
 					CidrBlock:        aws.String("192.168.2.0/24"),
-					Ipv6CidrBlockAssociationSet: []*ec2.SubnetIpv6CidrBlockAssociation{
+					Ipv6CidrBlockAssociationSet: []ec2types.SubnetIpv6CidrBlockAssociation{
 						{
 							Ipv6CidrBlock: aws.String("2600:1f13:837:8504::/64"),
-							Ipv6CidrBlockState: &ec2.SubnetCidrBlockState{
-								State: aws.String(ec2.SubnetCidrBlockStateCodeAssociated),
+							Ipv6CidrBlockState: &ec2types.SubnetCidrBlockState{
+								State: ec2types.SubnetCidrBlockStateCodeAssociated,
 							},
 						},
 					},
@@ -853,17 +858,17 @@ func Test_defaultModelBuilderTask_buildSubnetMappings(t *testing.T) {
 			name:          "dualstack - with EIPAllocation and IPv6Addresses",
 			ipAddressType: elbv2.IPAddressTypeDualStack,
 			scheme:        elbv2.LoadBalancerSchemeInternal,
-			subnets: []*ec2.Subnet{
+			subnets: []ec2types.Subnet{
 				{
 					SubnetId:         aws.String("subnet-1"),
 					AvailabilityZone: aws.String("us-west-2a"),
 					VpcId:            aws.String("vpc-1"),
 					CidrBlock:        aws.String("192.168.1.0/24"),
-					Ipv6CidrBlockAssociationSet: []*ec2.SubnetIpv6CidrBlockAssociation{
+					Ipv6CidrBlockAssociationSet: []ec2types.SubnetIpv6CidrBlockAssociation{
 						{
 							Ipv6CidrBlock: aws.String("2600:1f13:837:8500::/64"),
-							Ipv6CidrBlockState: &ec2.SubnetCidrBlockState{
-								State: aws.String(ec2.SubnetCidrBlockStateCodeAssociated),
+							Ipv6CidrBlockState: &ec2types.SubnetCidrBlockState{
+								State: ec2types.SubnetCidrBlockStateCodeAssociated,
 							},
 						},
 					},
@@ -873,11 +878,11 @@ func Test_defaultModelBuilderTask_buildSubnetMappings(t *testing.T) {
 					AvailabilityZone: aws.String("us-west-2b"),
 					VpcId:            aws.String("vpc-1"),
 					CidrBlock:        aws.String("192.168.2.0/24"),
-					Ipv6CidrBlockAssociationSet: []*ec2.SubnetIpv6CidrBlockAssociation{
+					Ipv6CidrBlockAssociationSet: []ec2types.SubnetIpv6CidrBlockAssociation{
 						{
 							Ipv6CidrBlock: aws.String("2600:1f13:837:8504::/64"),
-							Ipv6CidrBlockState: &ec2.SubnetCidrBlockState{
-								State: aws.String(ec2.SubnetCidrBlockStateCodeAssociated),
+							Ipv6CidrBlockState: &ec2types.SubnetCidrBlockState{
+								State: ec2types.SubnetCidrBlockStateCodeAssociated,
 							},
 						},
 					},
@@ -904,6 +909,223 @@ func Test_defaultModelBuilderTask_buildSubnetMappings(t *testing.T) {
 				},
 			},
 		},
+		{
+			name:                         "dualstack - source-nat-ipv6-prefixes - should throw error if enable-prefix-for-ipv6-source-nat is not provided or is off, but still source-nat-ipv6-prefixes is provided",
+			ipAddressType:                elbv2.IPAddressTypeDualStack,
+			scheme:                       elbv2.LoadBalancerSchemeInternal,
+			enablePrefixForIpv6SourceNat: elbv2.EnablePrefixForIpv6SourceNatOff,
+			subnets: []ec2types.Subnet{
+				{
+					SubnetId:         aws.String("subnet-1"),
+					AvailabilityZone: aws.String("us-west-2a"),
+					VpcId:            aws.String("vpc-1"),
+					CidrBlock:        aws.String("192.168.1.0/24"),
+					Ipv6CidrBlockAssociationSet: []ec2types.SubnetIpv6CidrBlockAssociation{
+						{
+							Ipv6CidrBlock: aws.String("2600:1f13:837:8500::/64"),
+							Ipv6CidrBlockState: &ec2types.SubnetCidrBlockState{
+								State: ec2types.SubnetCidrBlockStateCodeAssociated,
+							},
+						},
+					},
+				},
+			},
+			svc: &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						"service.beta.kubernetes.io/aws-load-balancer-source-nat-ipv6-prefixes": "2600:1f13:837:8504::1/80",
+					},
+				},
+			},
+			want:    nil,
+			wantErr: errors.New("source-nat-ipv6-prefixes annotation is only applicable if enable-prefix-for-ipv6-source-nat annotation is set to on."),
+		},
+		{
+			name:                         "dualstack - source-nat-ipv6-prefixes - should throw error if its not dualstack nlb, but source-nat-ipv6-prefixes is set",
+			ipAddressType:                elbv2.IPAddressTypeIPV4,
+			scheme:                       elbv2.LoadBalancerSchemeInternal,
+			enablePrefixForIpv6SourceNat: elbv2.EnablePrefixForIpv6SourceNatOn,
+			subnets: []ec2types.Subnet{
+				{
+					SubnetId:         aws.String("subnet-1"),
+					AvailabilityZone: aws.String("us-west-2a"),
+					VpcId:            aws.String("vpc-1"),
+					CidrBlock:        aws.String("192.168.1.0/24"),
+					Ipv6CidrBlockAssociationSet: []ec2types.SubnetIpv6CidrBlockAssociation{
+						{
+							Ipv6CidrBlock: aws.String("2600:1f13:837:8500::/64"),
+							Ipv6CidrBlockState: &ec2types.SubnetCidrBlockState{
+								State: ec2types.SubnetCidrBlockStateCodeAssociated,
+							},
+						},
+					},
+				},
+			},
+			svc: &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						"service.beta.kubernetes.io/aws-load-balancer-source-nat-ipv6-prefixes": "2600:1f13:837:8504::1/80",
+					},
+				},
+			},
+			want:    nil,
+			wantErr: errors.New("source-nat-ipv6-prefixes annotation can only be set for Network Load Balancers using Dualstack IP address type."),
+		},
+		{
+			name:                         "dualstack - source-nat-ipv6-prefixes - should throw error if source-nat-ipv6-prefix is not a valid IPv6 CIDR -1",
+			ipAddressType:                elbv2.IPAddressTypeDualStack,
+			scheme:                       elbv2.LoadBalancerSchemeInternal,
+			enablePrefixForIpv6SourceNat: elbv2.EnablePrefixForIpv6SourceNatOn,
+			subnets: []ec2types.Subnet{
+				{
+					SubnetId:         aws.String("subnet-1"),
+					AvailabilityZone: aws.String("us-west-2a"),
+					VpcId:            aws.String("vpc-1"),
+					CidrBlock:        aws.String("192.168.1.0/24"),
+					Ipv6CidrBlockAssociationSet: []ec2types.SubnetIpv6CidrBlockAssociation{
+						{
+							Ipv6CidrBlock: aws.String("2600:1f13:837:8500::/64"),
+							Ipv6CidrBlockState: &ec2types.SubnetCidrBlockState{
+								State: ec2types.SubnetCidrBlockStateCodeAssociated,
+							},
+						},
+					},
+				},
+			},
+			svc: &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						"service.beta.kubernetes.io/aws-load-balancer-source-nat-ipv6-prefixes": "2600:1f13:837:8766:6766:7987:6666:1:999/80",
+					},
+				},
+			},
+			want:    nil,
+			wantErr: errors.New("Invalid value in source-nat-ipv6-prefixes: 2600:1f13:837:8766:6766:7987:6666:1:999/80. Value must be a valid IPv6 CIDR."),
+		},
+		{
+			name:                         "dualstack - source-nat-ipv6-prefixes - should throw error if source-nat-ipv6-prefix is not a valid IPv6 CIDR -2",
+			ipAddressType:                elbv2.IPAddressTypeDualStack,
+			scheme:                       elbv2.LoadBalancerSchemeInternal,
+			enablePrefixForIpv6SourceNat: elbv2.EnablePrefixForIpv6SourceNatOn,
+			subnets: []ec2types.Subnet{
+				{
+					SubnetId:         aws.String("subnet-1"),
+					AvailabilityZone: aws.String("us-west-2a"),
+					VpcId:            aws.String("vpc-1"),
+					CidrBlock:        aws.String("192.168.1.0/24"),
+					Ipv6CidrBlockAssociationSet: []ec2types.SubnetIpv6CidrBlockAssociation{
+						{
+							Ipv6CidrBlock: aws.String("2600:1f13:837:8500::/64"),
+							Ipv6CidrBlockState: &ec2types.SubnetCidrBlockState{
+								State: ec2types.SubnetCidrBlockStateCodeAssociated,
+							},
+						},
+					},
+				},
+			},
+			svc: &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						"service.beta.kubernetes.io/aws-load-balancer-source-nat-ipv6-prefixes": "2600:1f13:837:87667::/80",
+					},
+				},
+			},
+			want:    nil,
+			wantErr: errors.New("Invalid value in source-nat-ipv6-prefixes: 2600:1f13:837:87667::/80. Value must be a valid IPv6 CIDR."),
+		},
+		{
+			name:                         "dualstack - source-nat-ipv6-prefixes - should throw error if source-nat-ipv6-prefix is not a valid IPv6 CIDR -3",
+			ipAddressType:                elbv2.IPAddressTypeDualStack,
+			scheme:                       elbv2.LoadBalancerSchemeInternal,
+			enablePrefixForIpv6SourceNat: elbv2.EnablePrefixForIpv6SourceNatOn,
+			subnets: []ec2types.Subnet{
+				{
+					SubnetId:         aws.String("subnet-1"),
+					AvailabilityZone: aws.String("us-west-2a"),
+					VpcId:            aws.String("vpc-1"),
+					CidrBlock:        aws.String("192.168.1.0/24"),
+					Ipv6CidrBlockAssociationSet: []ec2types.SubnetIpv6CidrBlockAssociation{
+						{
+							Ipv6CidrBlock: aws.String("2600:1f13:837:8500::/64"),
+							Ipv6CidrBlockState: &ec2types.SubnetCidrBlockState{
+								State: ec2types.SubnetCidrBlockStateCodeAssociated,
+							},
+						},
+					},
+				},
+			},
+			svc: &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						"service.beta.kubernetes.io/aws-load-balancer-source-nat-ipv6-prefixes": "2600:1f13:837:8766:77:789:9:9::/80",
+					},
+				},
+			},
+			want:    nil,
+			wantErr: errors.New("Invalid value in source-nat-ipv6-prefixes: 2600:1f13:837:8766:77:789:9:9::/80. Value must be a valid IPv6 CIDR."),
+		},
+		{
+			name:                         "dualstack - source-nat-ipv6-prefixes - should throw error if source-nat-ipv6-prefix within subnet CIDR range",
+			ipAddressType:                elbv2.IPAddressTypeDualStack,
+			scheme:                       elbv2.LoadBalancerSchemeInternal,
+			enablePrefixForIpv6SourceNat: elbv2.EnablePrefixForIpv6SourceNatOn,
+			subnets: []ec2types.Subnet{
+				{
+					SubnetId:         aws.String("subnet-1"),
+					AvailabilityZone: aws.String("us-west-2a"),
+					VpcId:            aws.String("vpc-1"),
+					CidrBlock:        aws.String("192.168.1.0/24"),
+					Ipv6CidrBlockAssociationSet: []ec2types.SubnetIpv6CidrBlockAssociation{
+						{
+							Ipv6CidrBlock: aws.String("2600:1f13:837:8500::/64"),
+							Ipv6CidrBlockState: &ec2types.SubnetCidrBlockState{
+								State: ec2types.SubnetCidrBlockStateCodeAssociated,
+							},
+						},
+					},
+				},
+			},
+			svc: &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						"service.beta.kubernetes.io/aws-load-balancer-source-nat-ipv6-prefixes": "2601:1f13:837:8500:009::/80",
+					},
+				},
+			},
+			want:    nil,
+			wantErr: errors.New("Invalid value in source-nat-ipv6-prefixes: 2601:1f13:837:8500:009::/80. Value must be within subnet CIDR range: [2600:1f13:837:8500::/64]."),
+		},
+		{
+			name:                         "dualstack - source-nat-ipv6-prefixes - should throw error if source-nat-ipv6-prefix doesnt have allowed prefix length of 80",
+			ipAddressType:                elbv2.IPAddressTypeDualStack,
+			scheme:                       elbv2.LoadBalancerSchemeInternal,
+			enablePrefixForIpv6SourceNat: elbv2.EnablePrefixForIpv6SourceNatOn,
+			subnets: []ec2types.Subnet{
+				{
+					SubnetId:         aws.String("subnet-1"),
+					AvailabilityZone: aws.String("us-west-2a"),
+					VpcId:            aws.String("vpc-1"),
+					CidrBlock:        aws.String("192.168.1.0/24"),
+					Ipv6CidrBlockAssociationSet: []ec2types.SubnetIpv6CidrBlockAssociation{
+						{
+							Ipv6CidrBlock: aws.String("2600:1f13:837:8500::/64"),
+							Ipv6CidrBlockState: &ec2types.SubnetCidrBlockState{
+								State: ec2types.SubnetCidrBlockStateCodeAssociated,
+							},
+						},
+					},
+				},
+			},
+			svc: &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						"service.beta.kubernetes.io/aws-load-balancer-source-nat-ipv6-prefixes": "2600:1f13:837:8500:9::/70",
+					},
+				},
+			},
+			want:    nil,
+			wantErr: errors.New("Invalid value in source-nat-ipv6-prefixes: 2600:1f13:837:8500:9::/70. Prefix length must be 80, but 70 is specified."),
+		},
 	}
 
 	for _, tt := range tests {
@@ -913,7 +1135,7 @@ func Test_defaultModelBuilderTask_buildSubnetMappings(t *testing.T) {
 
 			annotationParser := annotations.NewSuffixAnnotationParser("service.beta.kubernetes.io")
 			builder := &defaultModelBuildTask{service: tt.svc, annotationParser: annotationParser}
-			got, err := builder.buildLoadBalancerSubnetMappings(context.Background(), tt.ipAddressType, tt.scheme, tt.subnets)
+			got, err := builder.buildLoadBalancerSubnetMappings(context.Background(), tt.ipAddressType, tt.scheme, tt.subnets, tt.enablePrefixForIpv6SourceNat)
 			if tt.wantErr != nil {
 				assert.EqualError(t, err, tt.wantErr.Error())
 			} else {
@@ -925,7 +1147,7 @@ func Test_defaultModelBuilderTask_buildSubnetMappings(t *testing.T) {
 
 func Test_defaultModelBuilderTask_buildLoadBalancerSubnets(t *testing.T) {
 	type resolveSubnetResults struct {
-		subnets []*ec2.Subnet
+		subnets []ec2types.Subnet
 		err     error
 	}
 	type args struct {
@@ -947,7 +1169,7 @@ func Test_defaultModelBuilderTask_buildLoadBalancerSubnets(t *testing.T) {
 		listLoadBalancersCalls       []listLoadBalancerCall
 		resolveViaDiscoveryCalls     []resolveSubnetResults
 		resolveViaNameOrIDSliceCalls []resolveSubnetResults
-		want                         []*ec2.Subnet
+		want                         []ec2types.Subnet
 		wantErr                      error
 	}{
 		{
@@ -959,7 +1181,7 @@ func Test_defaultModelBuilderTask_buildLoadBalancerSubnets(t *testing.T) {
 			listLoadBalancersCalls: []listLoadBalancerCall{listLoadBalancerCallForEmptyLB},
 			resolveViaDiscoveryCalls: []resolveSubnetResults{
 				{
-					subnets: []*ec2.Subnet{
+					subnets: []ec2types.Subnet{
 						{
 							SubnetId:  aws.String("subnet-a"),
 							CidrBlock: aws.String("192.168.0.0/19"),
@@ -971,7 +1193,7 @@ func Test_defaultModelBuilderTask_buildLoadBalancerSubnets(t *testing.T) {
 					},
 				},
 			},
-			want: []*ec2.Subnet{
+			want: []ec2types.Subnet{
 				{
 					SubnetId:  aws.String("subnet-a"),
 					CidrBlock: aws.String("192.168.0.0/19"),
@@ -996,7 +1218,7 @@ func Test_defaultModelBuilderTask_buildLoadBalancerSubnets(t *testing.T) {
 			args:     args{stack: core.NewDefaultStack(core.StackID{Namespace: "namespace", Name: "serviceName"})},
 			resolveViaNameOrIDSliceCalls: []resolveSubnetResults{
 				{
-					subnets: []*ec2.Subnet{
+					subnets: []ec2types.Subnet{
 						{
 							SubnetId:  aws.String("subnet-abc"),
 							CidrBlock: aws.String("192.168.0.0/19"),
@@ -1008,7 +1230,7 @@ func Test_defaultModelBuilderTask_buildLoadBalancerSubnets(t *testing.T) {
 					},
 				},
 			},
-			want: []*ec2.Subnet{
+			want: []ec2types.Subnet{
 				{
 					SubnetId:  aws.String("subnet-abc"),
 					CidrBlock: aws.String("192.168.0.0/19"),
@@ -1029,9 +1251,9 @@ func Test_defaultModelBuilderTask_buildLoadBalancerSubnets(t *testing.T) {
 				{
 					sdkLBs: []elbv2deploy.LoadBalancerWithTags{
 						{
-							LoadBalancer: &elbv2sdk.LoadBalancer{
+							LoadBalancer: &elbv2types.LoadBalancer{
 								LoadBalancerArn: aws.String("lb-1"),
-								AvailabilityZones: []*elbv2sdk.AvailabilityZone{
+								AvailabilityZones: []elbv2types.AvailabilityZone{
 									{
 										SubnetId: aws.String("subnet-c"),
 									},
@@ -1039,11 +1261,11 @@ func Test_defaultModelBuilderTask_buildLoadBalancerSubnets(t *testing.T) {
 										SubnetId: aws.String("subnet-d"),
 									},
 								},
-								Scheme: aws.String("internal"),
+								Scheme: elbv2types.LoadBalancerSchemeEnumInternal,
 							},
 							Tags: map[string]string{
-								"elbv2.k8s.aws/cluster": "cluster-name",
-								"service.k8s.aws/stack": "namespace/serviceName",
+								shared_constants.TagKeyK8sCluster: "cluster-name",
+								"service.k8s.aws/stack":           "namespace/serviceName",
 							},
 						},
 					},
@@ -1051,7 +1273,7 @@ func Test_defaultModelBuilderTask_buildLoadBalancerSubnets(t *testing.T) {
 			},
 			resolveViaNameOrIDSliceCalls: []resolveSubnetResults{
 				{
-					subnets: []*ec2.Subnet{
+					subnets: []ec2types.Subnet{
 						{
 							SubnetId:  aws.String("subnet-c"),
 							CidrBlock: aws.String("192.168.0.0/19"),
@@ -1063,7 +1285,7 @@ func Test_defaultModelBuilderTask_buildLoadBalancerSubnets(t *testing.T) {
 					},
 				},
 			},
-			want: []*ec2.Subnet{
+			want: []ec2types.Subnet{
 				{
 					SubnetId:  aws.String("subnet-c"),
 					CidrBlock: aws.String("192.168.0.0/19"),
@@ -1084,9 +1306,9 @@ func Test_defaultModelBuilderTask_buildLoadBalancerSubnets(t *testing.T) {
 				{
 					sdkLBs: []elbv2deploy.LoadBalancerWithTags{
 						{
-							LoadBalancer: &elbv2sdk.LoadBalancer{
+							LoadBalancer: &elbv2types.LoadBalancer{
 								LoadBalancerArn: aws.String("lb-1"),
-								AvailabilityZones: []*elbv2sdk.AvailabilityZone{
+								AvailabilityZones: []elbv2types.AvailabilityZone{
 									{
 										SubnetId: aws.String("subnet-c"),
 									},
@@ -1094,7 +1316,7 @@ func Test_defaultModelBuilderTask_buildLoadBalancerSubnets(t *testing.T) {
 										SubnetId: aws.String("subnet-d"),
 									},
 								},
-								Scheme: aws.String("internet-facing"),
+								Scheme: elbv2types.LoadBalancerSchemeEnumInternetFacing,
 							},
 							Tags: map[string]string{
 								"elbv2.k8s.aws/cluster": "cluster-name",
@@ -1106,7 +1328,7 @@ func Test_defaultModelBuilderTask_buildLoadBalancerSubnets(t *testing.T) {
 			},
 			resolveViaDiscoveryCalls: []resolveSubnetResults{
 				{
-					subnets: []*ec2.Subnet{
+					subnets: []ec2types.Subnet{
 						{
 							SubnetId:  aws.String("subnet-a"),
 							CidrBlock: aws.String("192.168.0.0/19"),
@@ -1118,7 +1340,7 @@ func Test_defaultModelBuilderTask_buildLoadBalancerSubnets(t *testing.T) {
 					},
 				},
 			},
-			want: []*ec2.Subnet{
+			want: []ec2types.Subnet{
 				{
 					SubnetId:  aws.String("subnet-a"),
 					CidrBlock: aws.String("192.168.0.0/19"),
@@ -1234,6 +1456,144 @@ func Test_defaultModelBuildTask_buildLoadBalancerIPAddressType(t *testing.T) {
 			got, err := builder.buildLoadBalancerIPAddressType(context.Background())
 			if (err != nil) != tt.wantErr {
 				t.Errorf("buildLoadBalancerIPAddressType() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if got != tt.want {
+				t.Errorf("buildLoadBalancerIPAddressType() got = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func Test_defaultModelBuildTask_buildLoadBalancerEnablePrefixForIpv6SourceNat(t *testing.T) {
+	tests := []struct {
+		name          string
+		subnets       []ec2types.Subnet
+		ipAddressType elbv2.IPAddressType
+		service       *corev1.Service
+		want          elbv2.EnablePrefixForIpv6SourceNat
+		wantErr       error
+	}{
+		{
+			name:          "should error out if EnablePrefixForIpv6SourceNat is set to on for ipv4 address Type NLB",
+			ipAddressType: elbv2.IPAddressTypeIPV4,
+			subnets: []ec2types.Subnet{
+				{
+					SubnetId:         aws.String("subnet-1"),
+					AvailabilityZone: aws.String("us-west-2a"),
+					VpcId:            aws.String("vpc-1"),
+					CidrBlock:        aws.String("192.168.1.0/24"),
+				}},
+			service: &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{"service.beta.kubernetes.io/aws-load-balancer-enable-prefix-for-ipv6-source-nat": elbv2.ON},
+				},
+			},
+			want:    "",
+			wantErr: errors.New("enable-prefix-for-ipv6-source-nat annotation is only applicable to Network Load Balancers using Dualstack IP address type."),
+		},
+		{
+			name:          "should error out if EnablePrefixForIpv6SourceNat is set to on for dualstack NLB which doesnt have ipv6 Cidr subnet",
+			ipAddressType: elbv2.IPAddressTypeDualStack,
+			subnets: []ec2types.Subnet{
+				{
+					SubnetId:         aws.String("subnet-1"),
+					AvailabilityZone: aws.String("us-west-2a"),
+					VpcId:            aws.String("vpc-1"),
+					CidrBlock:        aws.String("192.168.1.0/24"),
+				}},
+			service: &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{"service.beta.kubernetes.io/aws-load-balancer-enable-prefix-for-ipv6-source-nat": elbv2.ON},
+				},
+			},
+			want:    "",
+			wantErr: errors.New("To enable prefix for source NAT, all associated subnets must have an IPv6 CIDR. Subnets without IPv6 CIDR: [subnet-1]."),
+		},
+		{
+			name:          "should error out if EnablePrefixForIpv6SourceNat value is set to something else than allowed values on or off",
+			ipAddressType: elbv2.IPAddressTypeDualStack,
+			subnets: []ec2types.Subnet{
+				{
+					SubnetId:         aws.String("subnet-1"),
+					AvailabilityZone: aws.String("us-west-2a"),
+					VpcId:            aws.String("vpc-1"),
+					CidrBlock:        aws.String("192.168.1.0/24"),
+				}},
+			service: &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{"service.beta.kubernetes.io/aws-load-balancer-enable-prefix-for-ipv6-source-nat": "randomValue"},
+				},
+			},
+			want:    "",
+			wantErr: errors.New("Invalid enable-prefix-for-ipv6-source-nat value: randomValue. Valid values are ['on', 'off']."),
+		},
+		{
+			name:          "should return EnablePrefixForIpv6SourceNat as on if annotation value is on",
+			ipAddressType: elbv2.IPAddressTypeDualStack,
+			subnets: []ec2types.Subnet{
+				{
+					SubnetId:         aws.String("subnet-1"),
+					AvailabilityZone: aws.String("us-west-2a"),
+					VpcId:            aws.String("vpc-1"),
+					CidrBlock:        aws.String("192.168.1.0/24"),
+					Ipv6CidrBlockAssociationSet: []ec2types.SubnetIpv6CidrBlockAssociation{
+						{
+							Ipv6CidrBlock: aws.String("2600:1f13:837:8500::/64"),
+							Ipv6CidrBlockState: &ec2types.SubnetCidrBlockState{
+								State: ec2types.SubnetCidrBlockStateCodeAssociated,
+							},
+						},
+					},
+				}},
+			service: &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{"service.beta.kubernetes.io/aws-load-balancer-enable-prefix-for-ipv6-source-nat": elbv2.ON},
+				},
+			},
+			want:    elbv2.ON,
+			wantErr: nil,
+		},
+
+		{
+			name:          "should return EnablePrefixForIpv6SourceNat as off if annotation value is off",
+			ipAddressType: elbv2.IPAddressTypeDualStack,
+			subnets: []ec2types.Subnet{
+				{
+					SubnetId:         aws.String("subnet-1"),
+					AvailabilityZone: aws.String("us-west-2a"),
+					VpcId:            aws.String("vpc-1"),
+					CidrBlock:        aws.String("192.168.1.0/24"),
+					Ipv6CidrBlockAssociationSet: []ec2types.SubnetIpv6CidrBlockAssociation{
+						{
+							Ipv6CidrBlock: aws.String("2600:1f13:837:8500::/64"),
+							Ipv6CidrBlockState: &ec2types.SubnetCidrBlockState{
+								State: ec2types.SubnetCidrBlockStateCodeAssociated,
+							},
+						},
+					},
+				}},
+			service: &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{"service.beta.kubernetes.io/aws-load-balancer-enable-prefix-for-ipv6-source-nat": elbv2.OFF},
+				},
+			},
+			want:    elbv2.OFF,
+			wantErr: nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parser := annotations.NewSuffixAnnotationParser("service.beta.kubernetes.io")
+			builder := &defaultModelBuildTask{
+				annotationParser:     parser,
+				service:              tt.service,
+				defaultIPAddressType: elbv2.IPAddressTypeIPV4,
+			}
+
+			got, err := builder.buildLoadBalancerEnablePrefixForIpv6SourceNat(context.Background(), tt.ipAddressType, tt.subnets)
+			if err != nil {
+				assert.EqualError(t, err, tt.wantErr.Error())
 				return
 			}
 			if got != tt.want {
@@ -1364,6 +1724,7 @@ func Test_defaultModelBuildTask_buildAdditionalResourceTags(t *testing.T) {
 				defaultTags:         tt.fields.defaultTags,
 				externalManagedTags: tt.fields.externalManagedTags,
 				annotationParser:    annotations.NewSuffixAnnotationParser("service.beta.kubernetes.io"),
+				featureGates:        config.NewFeatureGates(),
 			}
 			got, err := task.buildAdditionalResourceTags(context.Background())
 			if tt.wantErr != nil {
@@ -1437,6 +1798,294 @@ func Test_defaultModelBuildTask_buildLoadBalancerName(t *testing.T) {
 				assert.EqualError(t, err, tt.wantErr.Error())
 			} else {
 				assert.Equal(t, tt.want, got)
+			}
+		})
+	}
+}
+
+func Test_defaultModelBuilderTask_buildLbCapacity(t *testing.T) {
+	tests := []struct {
+		testName  string
+		svc       *corev1.Service
+		wantError bool
+		wantValue *elbv2.MinimumLoadBalancerCapacity
+	}{
+		{
+			testName: "Default value",
+			svc: &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						"service.beta.kubernetes.io/aws-load-balancer-type": "nlb-ip",
+					},
+				},
+			},
+			wantError: false,
+			wantValue: nil,
+		},
+		{
+			testName: "Annotation specified",
+			svc: &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						"service.beta.kubernetes.io/aws-load-balancer-type":                           "nlb-ip",
+						"service.beta.kubernetes.io/aws-load-balancer-minimum-load-balancer-capacity": "CapacityUnits=3000",
+					},
+				},
+			},
+			wantError: false,
+			wantValue: &elbv2.MinimumLoadBalancerCapacity{
+				CapacityUnits: int32(3000),
+			},
+		},
+		{
+			testName: "Annotation invalid",
+			svc: &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						"service.beta.kubernetes.io/aws-load-balancer-type":                           "nlb-ip",
+						"service.beta.kubernetes.io/aws-load-balancer-minimum-load-balancer-capacity": "InvalidUnits=3000",
+					},
+				},
+			},
+			wantError: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.testName, func(t *testing.T) {
+			parser := annotations.NewSuffixAnnotationParser("service.beta.kubernetes.io")
+			featureGates := config.NewFeatureGates()
+			builder := &defaultModelBuildTask{
+				service:                              tt.svc,
+				annotationParser:                     parser,
+				defaultAccessLogsS3Bucket:            "",
+				defaultAccessLogsS3Prefix:            "",
+				defaultLoadBalancingCrossZoneEnabled: false,
+				defaultProxyProtocolV2Enabled:        false,
+				defaultHealthCheckProtocol:           elbv2.ProtocolTCP,
+				defaultHealthCheckPort:               shared_constants.HealthCheckPortTrafficPort,
+				defaultHealthCheckPath:               "/",
+				defaultHealthCheckInterval:           10,
+				defaultHealthCheckTimeout:            10,
+				defaultHealthCheckHealthyThreshold:   3,
+				defaultHealthCheckUnhealthyThreshold: 3,
+				featureGates:                         featureGates,
+			}
+			lbMinimumCapacity, err := builder.buildLoadBalancerMinimumCapacity(context.Background())
+			if tt.wantError {
+				assert.Error(t, err)
+			} else {
+				assert.Equal(t, tt.wantValue, lbMinimumCapacity)
+			}
+		})
+	}
+}
+
+func Test_defaultModelBuildTask_buildManageSecurityGroupRulesFlag(t *testing.T) {
+	tests := []struct {
+		name                       string
+		enableManageBackendSGRules bool
+		annotations                map[string]string
+		wantManageSGRules          bool
+		wantErr                    bool
+	}{
+		{
+			name:                       "with no annotation and enableManageBackendSGRules=false - expect enable manage security group rules to be false",
+			enableManageBackendSGRules: false,
+			annotations:                map[string]string{},
+			wantManageSGRules:          false,
+			wantErr:                    false,
+		},
+		{
+			name:                       "with no annotation and enableManageBackendSGRules=true - expect enable manage security group rules to be true",
+			enableManageBackendSGRules: true,
+			annotations:                map[string]string{},
+			wantManageSGRules:          true,
+			wantErr:                    false,
+		},
+		{
+			name:                       "with annotation true and enableManageBackendSGRules=false - expect override and enable manage security group rules to be true",
+			enableManageBackendSGRules: false,
+			annotations: map[string]string{
+				"service.beta.kubernetes.io/aws-load-balancer-manage-backend-security-group-rules": "true",
+			},
+			wantManageSGRules: true,
+			wantErr:           false,
+		},
+		{
+			name:                       "with annotation false and enableManageBackendSGRules=true - expect override and enable manage security group rules to be false",
+			enableManageBackendSGRules: true,
+			annotations: map[string]string{
+				"service.beta.kubernetes.io/aws-load-balancer-manage-backend-security-group-rules": "false",
+			},
+			wantManageSGRules: false,
+			wantErr:           false,
+		},
+		{
+			name:                       "with invalid annotation - expect error",
+			enableManageBackendSGRules: false,
+			annotations: map[string]string{
+				"service.beta.kubernetes.io/aws-load-balancer-manage-backend-security-group-rules": "invalid",
+			},
+			wantManageSGRules: false,
+			wantErr:           true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			annotationParser := annotations.NewSuffixAnnotationParser("service.beta.kubernetes.io")
+
+			task := &defaultModelBuildTask{
+				enableManageBackendSGRules: tt.enableManageBackendSGRules,
+				service: &corev1.Service{
+					ObjectMeta: metav1.ObjectMeta{
+						Annotations: tt.annotations,
+					},
+				},
+				annotationParser: annotationParser,
+			}
+
+			got, err := task.buildManageSecurityGroupRulesFlag(context.Background())
+			if (err != nil) != tt.wantErr {
+				t.Errorf("buildManageSecurityGroupRulesFlag() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if got != tt.wantManageSGRules {
+				t.Errorf("buildManageSecurityGroupRulesFlag() got = %v, want %v", got, tt.wantManageSGRules)
+			}
+		})
+	}
+}
+
+func Test_defaultModelBuildTask_buildLoadBalancerTags(t *testing.T) {
+	tests := []struct {
+		name                string
+		enabledFeatureGates func() config.FeatureGates
+		defaultTags         map[string]string
+		svc                 *corev1.Service
+		wantTags            map[string]string
+		wantErr             bool
+	}{
+		{
+			name:                "no default tags, no annotation tags",
+			enabledFeatureGates: func() config.FeatureGates { return config.NewFeatureGates() },
+			defaultTags:         map[string]string{},
+			svc: &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{},
+				},
+			},
+			wantTags: map[string]string{},
+			wantErr:  false,
+		},
+		{
+			name:                "no default tags, annotation tags",
+			enabledFeatureGates: func() config.FeatureGates { return config.NewFeatureGates() },
+			defaultTags:         map[string]string{},
+			svc: &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						"service.beta.kubernetes.io/aws-load-balancer-additional-resource-tags": "k1=v1,k2=v2,k3=v3",
+					},
+				},
+			},
+			wantTags: map[string]string{
+				"k1": "v1",
+				"k2": "v2",
+				"k3": "v3",
+			},
+			wantErr: false,
+		},
+		{
+			name:                "default tags, no annotation tags",
+			enabledFeatureGates: func() config.FeatureGates { return config.NewFeatureGates() },
+			defaultTags: map[string]string{
+				"k1": "v10",
+				"k2": "v20",
+			},
+			svc: &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{},
+				},
+			},
+			wantTags: map[string]string{
+				"k1": "v10",
+				"k2": "v20",
+			},
+			wantErr: false,
+		},
+		{
+			name: "default tags, annotation tags, collision where default tags take priority",
+			enabledFeatureGates: func() config.FeatureGates {
+				featureGates := config.NewFeatureGates()
+				featureGates.Disable(config.EnableDefaultTagsLowPriority)
+				return featureGates
+			},
+			defaultTags: map[string]string{
+				"k1": "v10",
+				"k2": "v20",
+			},
+			svc: &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						"service.beta.kubernetes.io/aws-load-balancer-additional-resource-tags": "k1=v1,k2=v2,k3=v3",
+					},
+				},
+			},
+			wantTags: map[string]string{
+				"k1": "v10",
+				"k2": "v20",
+				"k3": "v3",
+			},
+			wantErr: false,
+		},
+		{
+			name: "default tags, annotation tags, collision where annotation tags take priority",
+			enabledFeatureGates: func() config.FeatureGates {
+				featureGates := config.NewFeatureGates()
+				featureGates.Enable(config.EnableDefaultTagsLowPriority)
+				return featureGates
+			},
+			defaultTags: map[string]string{
+				"k1": "v10",
+				"k2": "v20",
+			},
+			svc: &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						"service.beta.kubernetes.io/aws-load-balancer-additional-resource-tags": "k1=v10,k2=v20,k3=v30",
+					},
+				},
+			},
+			wantTags: map[string]string{
+				"k1": "v10",
+				"k2": "v20",
+				"k3": "v30",
+			},
+			wantErr: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			task := &defaultModelBuildTask{
+				featureGates:     tt.enabledFeatureGates(),
+				defaultTags:      tt.defaultTags,
+				annotationParser: annotations.NewSuffixAnnotationParser("service.beta.kubernetes.io"),
+				service:          tt.svc,
+			}
+			got, err := task.buildLoadBalancerTags(context.Background())
+			if tt.wantErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, tt.wantTags, got)
+			}
+			for key, value := range tt.wantTags {
+				assert.Contains(t, got, key)
+				assert.Equal(t, value, got[key])
 			}
 		})
 	}

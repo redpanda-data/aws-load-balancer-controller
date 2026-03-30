@@ -1,20 +1,40 @@
 package backend
 
 import (
+	"fmt"
 	corev1 "k8s.io/api/core/v1"
 	discv1 "k8s.io/api/discovery/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/k8s"
 )
 
+type Endpoint interface {
+	GetIdentifier(includeTimestamp bool, includeQuicServerId bool) string
+}
+
 // An endpoint provided by pod directly.
 type PodEndpoint struct {
 	// Pod's IP.
 	IP string
 	// Pod's container port.
-	Port int64
+	Port int32
+	// [QUIC] The ServerID for the IP:Port
+	QuicServerID *string
 	// Pod that provides this endpoint.
 	Pod k8s.PodInfo
+}
+
+func (e PodEndpoint) GetIdentifier(includeTimestamp bool, includeQuicServerId bool) string {
+	baseString := fmt.Sprintf("%s:%d", e.IP, e.Port)
+
+	if e.QuicServerID != nil && includeQuicServerId {
+		baseString = fmt.Sprintf("%s:%s", baseString, *e.QuicServerID)
+	}
+
+	if includeTimestamp {
+		return fmt.Sprintf("%s:%d", baseString, e.Pod.CreationTime.UnixMilli())
+	}
+	return baseString
 }
 
 // An endpoint provided by nodePort as traffic proxy.
@@ -22,9 +42,18 @@ type NodePortEndpoint struct {
 	// Node's instanceID.
 	InstanceID string
 	// Node's NodePort.
-	Port int64
+	Port int32
 	// Node that provides this endpoint.
 	Node *corev1.Node
+}
+
+// Instance targets do not support QUIC (for LBC)
+
+func (e NodePortEndpoint) GetIdentifier(includeTimestamp bool, _ bool) string {
+	if includeTimestamp {
+		return fmt.Sprintf("%s:%d:%d", e.InstanceID, e.Port, e.Node.CreationTimestamp.UnixMilli())
+	}
+	return fmt.Sprintf("%s:%d", e.InstanceID, e.Port)
 }
 
 type EndpointsData struct {

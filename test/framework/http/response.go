@@ -1,23 +1,25 @@
 package http
 
 import (
-	"io/ioutil"
+	"io"
 	gohttp "net/http"
 )
 
 type Response struct {
 	Body         []byte
 	ResponseCode int
+	Headers      map[string][]string
 }
 
 func buildResponse(resp *gohttp.Response) (Response, error) {
 	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return Response{}, err
 	}
 	return Response{
 		Body:         body,
 		ResponseCode: resp.StatusCode,
+		Headers:      resp.Header,
 	}, nil
 }

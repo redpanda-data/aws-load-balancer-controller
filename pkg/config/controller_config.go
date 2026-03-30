@@ -1,6 +1,9 @@
 package config
 
 import (
+	"sigs.k8s.io/aws-load-balancer-controller/pkg/inject/pod_readiness"
+	"sigs.k8s.io/aws-load-balancer-controller/pkg/inject/quic"
+	"sigs.k8s.io/aws-load-balancer-controller/pkg/shared_constants"
 	"strings"
 	"time"
 
@@ -8,39 +11,58 @@ import (
 	"github.com/spf13/pflag"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/aws"
-	"sigs.k8s.io/aws-load-balancer-controller/pkg/inject"
+	"sigs.k8s.io/aws-load-balancer-controller/pkg/model/elbv2"
 )
 
 const (
 	flagLogLevel                                     = "log-level"
 	flagK8sClusterName                               = "cluster-name"
 	flagDefaultTags                                  = "default-tags"
+	flagDefaultTargetType                            = "default-target-type"
+	flagDefaultLoadBalancerScheme                    = "default-load-balancer-scheme"
 	flagExternalManagedTags                          = "external-managed-tags"
+	flagServiceTargetENISGTags                       = "service-target-eni-security-group-tags"
 	flagServiceMaxConcurrentReconciles               = "service-max-concurrent-reconciles"
 	flagTargetGroupBindingMaxConcurrentReconciles    = "targetgroupbinding-max-concurrent-reconciles"
+	flagGatewayClassMaxConcurrentReconciles          = "gateway-class-max-concurrent-reconciles"
+	flagALBGatewayMaxConcurrentReconciles            = "alb-gateway-max-concurrent-reconciles"
+	flagNLBGatewayMaxConcurrentReconciles            = "nlb-gateway-max-concurrent-reconciles"
+	flagGlobalAcceleratorMaxConcurrentReconciles     = "globalaccelerator-max-concurrent-reconciles"
+	flagGlobalAcceleratorMaxExponentialBackoffDelay  = "globalaccelerator-max-exponential-backoff-delay"
 	flagTargetGroupBindingMaxExponentialBackoffDelay = "targetgroupbinding-max-exponential-backoff-delay"
+	flagLbStabilizationMonitorInterval               = "lb-stabilization-monitor-interval"
 	flagDefaultSSLPolicy                             = "default-ssl-policy"
 	flagEnableBackendSG                              = "enable-backend-security-group"
+	flagEnableManageBackendSGRules                   = "enable-manage-backend-security-group-rules"
 	flagBackendSecurityGroup                         = "backend-security-group"
 	flagEnableEndpointSlices                         = "enable-endpoint-slices"
 	flagDisableRestrictedSGRules                     = "disable-restricted-sg-rules"
+	flagMaxTargetsPerTargetGroup                     = "max-targets-per-target-group"
 	defaultLogLevel                                  = "info"
+	defaultGlobalAcceleratorMaxConcurrentReconciles  = 1
 	defaultMaxConcurrentReconciles                   = 3
 	defaultMaxExponentialBackoffDelay                = time.Second * 1000
 	defaultSSLPolicy                                 = "ELBSecurityPolicy-2016-08"
 	defaultEnableBackendSG                           = true
-	defaultEnableEndpointSlices                      = false
+	defaultEnableManageBackendSGRules                = false
+	defaultEnableEndpointSlices                      = true
 	defaultDisableRestrictedSGRules                  = false
+	defaultLbStabilizationMonitorInterval            = time.Second * 120
+	defaultMaxTargetsPerTargetGroup                  = 0
 )
 
 var (
 	trackingTagKeys = sets.NewString(
-		"elbv2.k8s.aws/cluster",
-		"elbv2.k8s.aws/resource",
+		shared_constants.TagKeyK8sCluster,
+		shared_constants.TagKeyResource,
 		"ingress.k8s.aws/stack",
 		"ingress.k8s.aws/resource",
 		"service.k8s.aws/stack",
 		"service.k8s.aws/resource",
+		"gateway.k8s.aws.nlb/resource",
+		"gateway.k8s.aws.alb/resource",
+		"gateway.k8s.aws.nlb/stack",
+		"gateway.k8s.aws.alb/stack",
 	)
 )
 
@@ -55,7 +77,9 @@ type ControllerConfig struct {
 	// Configurations for the Controller Runtime
 	RuntimeConfig RuntimeConfig
 	// Configurations for Pod inject webhook
-	PodWebhookConfig inject.Config
+	PodWebhookConfig pod_readiness.PodReadinessGateConfig
+	// Configurations for QUIC integration.
+	ServerIDInjectionConfig quic.ServerIDInjectionConfig
 	// Configurations for the Ingress controller
 	IngressConfig IngressConfig
 	// Configurations for Addons feature
@@ -66,8 +90,17 @@ type ControllerConfig struct {
 	// Default AWS Tags that will be applied to all AWS resources managed by this controller.
 	DefaultTags map[string]string
 
+	// Default target type for Ingress and Service objects
+	DefaultTargetType string
+
+	// Default scheme for ELB
+	DefaultLoadBalancerScheme string
+
 	// List of Tag keys on AWS resources that will be managed externally.
 	ExternalManagedTags []string
+
+	// ServiceTargetENISGTags are AWS tags, in addition to the cluster tags, for finding the target ENI security group to which to add inbound rules from NLBs.
+	ServiceTargetENISGTags map[string]string
 
 	// Default SSL Policy that will be applied to all ingresses or services that do not have
 	// the SSL Policy annotation.
@@ -83,8 +116,26 @@ type ControllerConfig struct {
 	// Max exponential backoff delay for reconcile failures of TargetGroupBinding
 	TargetGroupBindingMaxExponentialBackoffDelay time.Duration
 
+	// GatewayClassMaxConcurrentReconciles for concurrent reconcile loops for GatewayClass objects
+	GatewayClassMaxConcurrentReconciles int
+
+	// ALBGatewayMaxConcurrentReconciles Max concurrent reconcile loops for ALB Gateway objects
+	ALBGatewayMaxConcurrentReconciles int
+
+	// NLBGatewayMaxConcurrentReconciles Max concurrent reconcile loops for NLB Gateway objects
+	NLBGatewayMaxConcurrentReconciles int
+
+	// GlobalAcceleratorMaxConcurrentReconciles Max concurrent reconcile loops for GlobalAccelerator objects
+	GlobalAcceleratorMaxConcurrentReconciles int
+
+	// GlobalAcceleratorMaxExponentialBackoffDelay Max exponential backoff delay for reconcile failures of GlobalAccelerator
+	GlobalAcceleratorMaxExponentialBackoffDelay time.Duration
+
 	// EnableBackendSecurityGroup specifies whether to use optimized security group rules
 	EnableBackendSecurityGroup bool
+
+	// EnableManageBackendSecurityGroupRules specifies whether to have controller manages security group rules
+	EnableManageBackendSecurityGroupRules bool
 
 	// BackendSecurityGroups specifies the configured backend security group to use
 	// for optimized security group rules
@@ -92,6 +143,12 @@ type ControllerConfig struct {
 
 	// DisableRestrictedSGRules specifies whether to use restricted security group rules
 	DisableRestrictedSGRules bool
+
+	// LBStabilizationMonitorInterval specifies the duration of interval to monitor the load balancer state for stabilization
+	LBStabilizationMonitorInterval time.Duration
+
+	// MaxTargetsPerTargetGroup limits the number of targets that will be added to an ELB instance
+	MaxTargetsPerTargetGroup int
 
 	FeatureGates FeatureGates
 }
@@ -103,30 +160,52 @@ func (cfg *ControllerConfig) BindFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&cfg.ClusterName, flagK8sClusterName, "", "Kubernetes cluster name")
 	fs.StringToStringVar(&cfg.DefaultTags, flagDefaultTags, nil,
 		"Default AWS Tags that will be applied to all AWS resources managed by this controller")
+	fs.StringVar(&cfg.DefaultTargetType, flagDefaultTargetType, string(elbv2.TargetTypeInstance),
+		"Default target type for Ingresses and Services - ip, instance")
+	fs.StringVar(&cfg.DefaultLoadBalancerScheme, flagDefaultLoadBalancerScheme, string(elbv2.LoadBalancerSchemeInternal),
+		"Default scheme for ELBs")
 	fs.StringSliceVar(&cfg.ExternalManagedTags, flagExternalManagedTags, nil,
 		"List of Tag keys on AWS resources that will be managed externally")
 	fs.IntVar(&cfg.ServiceMaxConcurrentReconciles, flagServiceMaxConcurrentReconciles, defaultMaxConcurrentReconciles,
 		"Maximum number of concurrently running reconcile loops for service")
 	fs.IntVar(&cfg.TargetGroupBindingMaxConcurrentReconciles, flagTargetGroupBindingMaxConcurrentReconciles, defaultMaxConcurrentReconciles,
 		"Maximum number of concurrently running reconcile loops for targetGroupBinding")
+	fs.IntVar(&cfg.GatewayClassMaxConcurrentReconciles, flagGatewayClassMaxConcurrentReconciles, defaultMaxConcurrentReconciles,
+		"Maximum number of concurrently running reconcile loops for gateway class changes")
+	fs.IntVar(&cfg.ALBGatewayMaxConcurrentReconciles, flagALBGatewayMaxConcurrentReconciles, defaultMaxConcurrentReconciles,
+		"Maximum number of concurrently running reconcile loops for alb gateway")
+	fs.IntVar(&cfg.NLBGatewayMaxConcurrentReconciles, flagNLBGatewayMaxConcurrentReconciles, defaultMaxConcurrentReconciles,
+		"Maximum number of concurrently running reconcile loops for nlb gateway")
+	fs.IntVar(&cfg.GlobalAcceleratorMaxConcurrentReconciles, flagGlobalAcceleratorMaxConcurrentReconciles, defaultGlobalAcceleratorMaxConcurrentReconciles,
+		"Maximum number of concurrently running reconcile loops for globalAccelerator")
+	fs.DurationVar(&cfg.GlobalAcceleratorMaxExponentialBackoffDelay, flagGlobalAcceleratorMaxExponentialBackoffDelay, defaultMaxExponentialBackoffDelay,
+		"Maximum duration of exponential backoff for globalAccelerator reconcile failures")
 	fs.DurationVar(&cfg.TargetGroupBindingMaxExponentialBackoffDelay, flagTargetGroupBindingMaxExponentialBackoffDelay, defaultMaxExponentialBackoffDelay,
 		"Maximum duration of exponential backoff for targetGroupBinding reconcile failures")
+	fs.DurationVar(&cfg.LBStabilizationMonitorInterval, flagLbStabilizationMonitorInterval, defaultLbStabilizationMonitorInterval,
+		"Duration of interval to monitor the load balancer state for stabilization")
 	fs.StringVar(&cfg.DefaultSSLPolicy, flagDefaultSSLPolicy, defaultSSLPolicy,
 		"Default SSL policy for load balancers listeners")
 	fs.BoolVar(&cfg.EnableBackendSecurityGroup, flagEnableBackendSG, defaultEnableBackendSG,
 		"Enable sharing of security groups for backend traffic")
+	fs.BoolVar(&cfg.EnableManageBackendSecurityGroupRules, flagEnableManageBackendSGRules, defaultEnableManageBackendSGRules,
+		"Enable managing of backend security group rules by controller")
 	fs.StringVar(&cfg.BackendSecurityGroup, flagBackendSecurityGroup, "",
 		"Backend security group id to use for the ingress rules on the worker node SG")
 	fs.BoolVar(&cfg.EnableEndpointSlices, flagEnableEndpointSlices, defaultEnableEndpointSlices,
 		"Enable EndpointSlices for IP targets instead of Endpoints")
 	fs.BoolVar(&cfg.DisableRestrictedSGRules, flagDisableRestrictedSGRules, defaultDisableRestrictedSGRules,
 		"Disable the usage of restricted security group rules")
-
+	fs.StringToStringVar(&cfg.ServiceTargetENISGTags, flagServiceTargetENISGTags, nil,
+		"AWS Tags, in addition to cluster tags, for finding the target ENI security group to which to add inbound rules from NLBs")
+	fs.IntVar(&cfg.MaxTargetsPerTargetGroup, flagMaxTargetsPerTargetGroup, defaultMaxTargetsPerTargetGroup,
+		"Maximum number of targets that can be added to an ELB instance. Use this to prevent TargetGroup quotas being exceeded from blocking reconciliation.")
 	cfg.FeatureGates.BindFlags(fs)
 	cfg.AWSConfig.BindFlags(fs)
 	cfg.RuntimeConfig.BindFlags(fs)
 
 	cfg.PodWebhookConfig.BindFlags(fs)
+	cfg.ServerIDInjectionConfig.BindFlags(fs)
 	cfg.IngressConfig.BindFlags(fs)
 	cfg.AddonsConfig.BindFlags(fs)
 	cfg.ServiceConfig.BindFlags(fs)
@@ -147,7 +226,16 @@ func (cfg *ControllerConfig) Validate() error {
 	if err := cfg.validateExternalManagedTagsCollisionWithDefaultTags(); err != nil {
 		return err
 	}
+	if err := cfg.validateDefaultTargetType(); err != nil {
+		return err
+	}
+	if err := cfg.validateDefaultLoadBalancerScheme(); err != nil {
+		return err
+	}
 	if err := cfg.validateBackendSecurityGroupConfiguration(); err != nil {
+		return err
+	}
+	if err := cfg.validateManageBackendSecurityGroupRulesConfiguration(); err != nil {
 		return err
 	}
 	return nil
@@ -181,12 +269,37 @@ func (cfg *ControllerConfig) validateExternalManagedTagsCollisionWithDefaultTags
 	return nil
 }
 
+func (cfg *ControllerConfig) validateDefaultTargetType() error {
+	switch cfg.DefaultTargetType {
+	case string(elbv2.TargetTypeInstance), string(elbv2.TargetTypeIP):
+		return nil
+	default:
+		return errors.Errorf("invalid value %v for default target type", cfg.DefaultTargetType)
+	}
+}
+
+func (cfg *ControllerConfig) validateDefaultLoadBalancerScheme() error {
+	switch cfg.DefaultLoadBalancerScheme {
+	case string(elbv2.LoadBalancerSchemeInternal), string(elbv2.LoadBalancerSchemeInternetFacing):
+		return nil
+	default:
+		return errors.Errorf("invalid value %v for default scheme", cfg.DefaultLoadBalancerScheme)
+	}
+}
+
 func (cfg *ControllerConfig) validateBackendSecurityGroupConfiguration() error {
 	if len(cfg.BackendSecurityGroup) == 0 {
 		return nil
 	}
 	if !strings.HasPrefix(cfg.BackendSecurityGroup, "sg-") {
 		return errors.Errorf("invalid value %v for backend security group id", cfg.BackendSecurityGroup)
+	}
+	return nil
+}
+
+func (cfg *ControllerConfig) validateManageBackendSecurityGroupRulesConfiguration() error {
+	if cfg.EnableManageBackendSecurityGroupRules && !cfg.EnableBackendSecurityGroup {
+		return errors.Errorf("backend security group must be enabled when manage backend security group rule is enabled")
 	}
 	return nil
 }

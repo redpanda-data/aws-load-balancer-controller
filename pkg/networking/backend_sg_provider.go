@@ -5,21 +5,29 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/aws/smithy-go"
 	"regexp"
+	"sigs.k8s.io/aws-load-balancer-controller/pkg/shared_constants"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
-	awssdk "github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/awserr"
-	ec2sdk "github.com/aws/aws-sdk-go/service/ec2"
+	awssdk "github.com/aws/aws-sdk-go-v2/aws"
+	ec2sdk "github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
+	corev1 "k8s.io/api/core/v1"
 	networking "k8s.io/api/networking/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/sets"
+	"sigs.k8s.io/aws-load-balancer-controller/pkg/algorithm"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/aws/services"
+	"sigs.k8s.io/aws-load-balancer-controller/pkg/k8s"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	gwv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
 const (
@@ -27,27 +35,30 @@ const (
 	defaultSGDeletionTimeout      = 2 * time.Minute
 
 	resourceTypeSecurityGroup = "security-group"
-	tagKeyK8sCluster          = "elbv2.k8s.aws/cluster"
-	tagKeyResource            = "elbv2.k8s.aws/resource"
 	tagValueBackend           = "backend-sg"
 
-	explicitGroupFinalizerPrefix = "group.ingress.k8s.aws/"
-	implicitGroupFinalizer       = "ingress.k8s.aws/resources"
-
 	sgDescription = "[k8s] Shared Backend SecurityGroup for LoadBalancer"
+)
+
+type ResourceType string
+
+const (
+	ResourceTypeIngress = "ingress"
+	ResourceTypeService = "service"
+	ResourceTypeGateway = "gateway"
 )
 
 // BackendSGProvider is responsible for providing backend security groups
 type BackendSGProvider interface {
 	// Get returns the backend security group to use
-	Get(ctx context.Context) (string, error)
+	Get(ctx context.Context, resourceType ResourceType, activeResources []types.NamespacedName) (string, error)
 	// Release cleans up the auto-generated backend SG if necessary
-	Release(ctx context.Context) error
+	Release(ctx context.Context, resourceType ResourceType, inactiveResources []types.NamespacedName) error
 }
 
 // NewBackendSGProvider constructs a new  defaultBackendSGProvider
 func NewBackendSGProvider(clusterName string, backendSG string, vpcID string,
-	ec2Client services.EC2, k8sClient client.Client, defaultTags map[string]string, logger logr.Logger) *defaultBackendSGProvider {
+	ec2Client services.EC2, k8sClient client.Client, defaultTags map[string]string, enableGatewayCheck bool, logger logr.Logger) *defaultBackendSGProvider {
 	return &defaultBackendSGProvider{
 		vpcID:       vpcID,
 		clusterName: clusterName,
@@ -57,6 +68,35 @@ func NewBackendSGProvider(clusterName string, backendSG string, vpcID string,
 		k8sClient:   k8sClient,
 		logger:      logger,
 		mutex:       sync.Mutex{},
+
+		enableGatewayCheck: enableGatewayCheck,
+
+		checkIngressFinalizersFunc: func(finalizers []string) bool {
+			for _, fin := range finalizers {
+				if fin == shared_constants.ImplicitGroupFinalizer || strings.HasPrefix(fin, shared_constants.ExplicitGroupFinalizerPrefix) {
+					return true
+				}
+			}
+			return false
+		},
+
+		checkServiceFinalizersFunc: func(finalizers []string) bool {
+			for _, fin := range finalizers {
+				if fin == shared_constants.ServiceFinalizer {
+					return true
+				}
+			}
+			return false
+		},
+
+		checkGatewayFinalizersFunc: func(finalizers []string) bool {
+			for _, fin := range finalizers {
+				if fin == shared_constants.ALBGatewayFinalizer || fin == shared_constants.NLBGatewayFinalizer {
+					return true
+				}
+			}
+			return false
+		},
 
 		defaultDeletionPollInterval: defaultSGDeletionPollInterval,
 		defaultDeletionTimeout:      defaultSGDeletionTimeout,
@@ -76,49 +116,167 @@ type defaultBackendSGProvider struct {
 	ec2Client       services.EC2
 	k8sClient       client.Client
 	logger          logr.Logger
+	// objectsMap keeps track of whether the backend SG is required for any tracked resources in the cluster.
+	// If any entry in the map is true, or there are resources with this controller specific finalizers which
+	// haven't been tracked in the map yet, controller doesn't delete the backend SG. If the controller has
+	// processed all supported resources and none of them require backend SG, i.e. the values are false in this map
+	// controller deletes the backend SG.
+	objectsMap sync.Map
+
+	enableGatewayCheck bool
+
+	checkServiceFinalizersFunc func([]string) bool
+	checkIngressFinalizersFunc func([]string) bool
+	checkGatewayFinalizersFunc func([]string) bool
 
 	defaultDeletionPollInterval time.Duration
 	defaultDeletionTimeout      time.Duration
 }
 
-func (p *defaultBackendSGProvider) Get(ctx context.Context) (string, error) {
+func (p *defaultBackendSGProvider) Get(ctx context.Context, resourceType ResourceType, activeResources []types.NamespacedName) (string, error) {
 	if len(p.backendSG) > 0 {
 		return p.backendSG, nil
 	}
 	// Auto generate Backend Security group, and return the id
-	if err := p.allocateBackendSG(ctx); err != nil {
+	if err := p.allocateBackendSG(ctx, resourceType, activeResources); err != nil {
 		p.logger.Error(err, "Failed to auto-create backend SG")
 		return "", err
 	}
 	return p.autoGeneratedSG, nil
 }
 
-func (p *defaultBackendSGProvider) Release(ctx context.Context) error {
+func (p *defaultBackendSGProvider) Release(ctx context.Context, resourceType ResourceType,
+	inactiveResources []types.NamespacedName) error {
 	if len(p.backendSG) > 0 {
 		return nil
 	}
+	defer func() {
+		for _, res := range inactiveResources {
+			p.objectsMap.CompareAndDelete(getObjectKey(resourceType, res), false)
+		}
+	}()
+	p.updateObjectsMap(ctx, resourceType, inactiveResources, false)
+	p.logger.V(1).Info("release backend SG", "inactive", inactiveResources)
 	if required, err := p.isBackendSGRequired(ctx); required || err != nil {
 		return err
 	}
 	return p.releaseSG(ctx)
 }
 
-func (p *defaultBackendSGProvider) allocateBackendSG(ctx context.Context) error {
+func (p *defaultBackendSGProvider) updateObjectsMap(_ context.Context, resourceType ResourceType,
+	resources []types.NamespacedName, backendSGRequired bool) {
+	for _, res := range resources {
+		p.objectsMap.Store(getObjectKey(resourceType, res), backendSGRequired)
+	}
+}
+
+func (p *defaultBackendSGProvider) isBackendSGRequired(ctx context.Context) (bool, error) {
+	var requiredForAny bool
+	p.objectsMap.Range(func(_, v interface{}) bool {
+		if v.(bool) {
+			requiredForAny = true
+			return false
+		}
+		return true
+	})
+	if requiredForAny {
+		return true, nil
+	}
+	if required, err := p.checkIngressListForUnmapped(ctx); required || err != nil {
+		return required, err
+	}
+	if required, err := p.checkServiceListForUnmapped(ctx); required || err != nil {
+		return required, err
+	}
+	if required, err := p.checkGatewayListForUnmapped(ctx); required || err != nil {
+		return required, err
+	}
+	return false, nil
+}
+
+func (p *defaultBackendSGProvider) checkIngressListForUnmapped(ctx context.Context) (bool, error) {
+	ingList := &networking.IngressList{}
+	if err := p.k8sClient.List(ctx, ingList); err != nil {
+		return true, errors.Wrapf(err, "unable to list ingresses")
+	}
+	for _, ing := range ingList.Items {
+		if !p.checkIngressFinalizersFunc(ing.GetFinalizers()) {
+			continue
+		}
+		if !p.existsInObjectMap(ResourceTypeIngress, k8s.NamespacedName(&ing)) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (p *defaultBackendSGProvider) checkServiceListForUnmapped(ctx context.Context) (bool, error) {
+	svcList := &corev1.ServiceList{}
+	if err := p.k8sClient.List(ctx, svcList); err != nil {
+		return true, errors.Wrapf(err, "unable to list services")
+	}
+	for _, svc := range svcList.Items {
+		if !p.checkServiceFinalizersFunc(svc.GetFinalizers()) {
+			continue
+		}
+		if !p.existsInObjectMap(ResourceTypeService, k8s.NamespacedName(&svc)) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (p *defaultBackendSGProvider) checkGatewayListForUnmapped(ctx context.Context) (bool, error) {
+	if !p.enableGatewayCheck {
+		return false, nil
+	}
+
+	gwList := &gwv1.GatewayList{}
+	if err := p.k8sClient.List(ctx, gwList); err != nil {
+		return true, errors.Wrapf(err, "unable to list gateways")
+	}
+	for _, gw := range gwList.Items {
+		if !p.checkGatewayFinalizersFunc(gw.GetFinalizers()) {
+			continue
+		}
+		if !p.existsInObjectMap(ResourceTypeGateway, k8s.NamespacedName(&gw)) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (p *defaultBackendSGProvider) existsInObjectMap(resourceType ResourceType, resource types.NamespacedName) bool {
+	if _, exists := p.objectsMap.Load(getObjectKey(resourceType, resource)); exists {
+		return true
+	}
+	return false
+}
+
+func (p *defaultBackendSGProvider) allocateBackendSG(ctx context.Context, resourceType ResourceType, activeResources []types.NamespacedName) error {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
 
+	p.updateObjectsMap(ctx, resourceType, activeResources, true)
 	if len(p.autoGeneratedSG) > 0 {
 		return nil
 	}
 
 	sgName := p.getBackendSGName()
-	sgID, err := p.getBackendSGFromEC2(ctx, sgName, p.vpcID)
+	sg, err := p.getBackendSGFromEC2(ctx, sgName, p.vpcID)
 	if err != nil {
 		return err
 	}
-	if len(sgID) > 1 {
+	if sg != nil {
+		sgID := awssdk.ToString(sg.GroupId)
 		p.logger.V(1).Info("Existing SG found", "id", sgID)
 		p.autoGeneratedSG = sgID
+
+		if err = p.reconcileTags(ctx, *sg); err != nil {
+			p.logger.Error(err, "failed to synchronize tags of existing securityGroup", sgID)
+			return err
+		}
+		p.logger.Info("added resource tags", "resourceID", sgID)
 		return nil
 	}
 
@@ -128,37 +286,90 @@ func (p *defaultBackendSGProvider) allocateBackendSG(ctx context.Context) error 
 		Description:       awssdk.String(sgDescription),
 		TagSpecifications: p.buildBackendSGTags(ctx),
 	}
-	p.logger.Info("creating securityGroup", "name", sgName)
+	p.logger.V(1).Info("creating securityGroup", "name", sgName)
 	resp, err := p.ec2Client.CreateSecurityGroupWithContext(ctx, createReq)
 	if err != nil {
 		return err
 	}
-	p.logger.V(1).Info("created SecurityGroup", "name", sgName, "id", resp.GroupId)
-	p.autoGeneratedSG = awssdk.StringValue(resp.GroupId)
+	p.logger.Info("created SecurityGroup", "name", sgName, "id", resp.GroupId)
+	p.autoGeneratedSG = awssdk.ToString(resp.GroupId)
 	return nil
 }
 
-func (p *defaultBackendSGProvider) buildBackendSGTags(_ context.Context) []*ec2sdk.TagSpecification {
-	var defaultTags []*ec2sdk.Tag
+func (p *defaultBackendSGProvider) reconcileTags(ctx context.Context, sg ec2types.SecurityGroup) error {
+	desiredTags := p.buildBackendSGTagsMap()
+	currentTags := make(map[string]string)
+	for _, tag := range sg.Tags {
+		currentTags[awssdk.ToString(tag.Key)] = awssdk.ToString(tag.Value)
+	}
+
+	tagsToUpdate, tagsToRemove := algorithm.DiffStringMap(desiredTags, currentTags)
+
+	if len(tagsToUpdate) > 0 {
+		req := &ec2sdk.CreateTagsInput{
+			Resources: []string{*sg.GroupId},
+			Tags:      convertTagsToSDKTags(tagsToUpdate),
+		}
+
+		p.logger.Info("adding resource tags",
+			"resourceID", sg.GroupId,
+			"change", tagsToUpdate)
+		if _, err := p.ec2Client.CreateTagsWithContext(ctx, req); err != nil {
+			return err
+		}
+		p.logger.Info("added resource tags",
+			"resourceID", sg.GroupId)
+	}
+
+	if len(tagsToRemove) > 0 {
+		req := &ec2sdk.DeleteTagsInput{
+			Resources: []string{*sg.GroupId},
+			Tags:      convertTagsToSDKTags(tagsToRemove),
+		}
+
+		p.logger.Info("removing resource tags",
+			"resourceID", sg.GroupId,
+			"change", tagsToRemove)
+		if _, err := p.ec2Client.DeleteTagsWithContext(ctx, req); err != nil {
+			return err
+		}
+		p.logger.Info("removed resource tags",
+			"resourceID", sg.GroupId)
+	}
+	return nil
+}
+
+func (p *defaultBackendSGProvider) buildBackendSGTagsMap() map[string]string {
+	defaultTags := make(map[string]string)
 	for key, val := range p.defaultTags {
-		defaultTags = append(defaultTags, &ec2sdk.Tag{
+		defaultTags[key] = val
+	}
+	defaultTags[shared_constants.TagKeyK8sCluster] = p.clusterName
+	defaultTags[shared_constants.TagKeyResource] = tagValueBackend
+	return defaultTags
+}
+
+func (p *defaultBackendSGProvider) buildBackendSGTags(_ context.Context) []ec2types.TagSpecification {
+	var defaultTags []ec2types.Tag
+	for key, val := range p.defaultTags {
+		defaultTags = append(defaultTags, ec2types.Tag{
 			Key:   awssdk.String(key),
 			Value: awssdk.String(val),
 		})
 	}
 	sort.Slice(defaultTags, func(i, j int) bool {
-		return awssdk.StringValue(defaultTags[i].Key) < awssdk.StringValue(defaultTags[j].Key)
+		return awssdk.ToString(defaultTags[i].Key) < awssdk.ToString(defaultTags[j].Key)
 	})
-	return []*ec2sdk.TagSpecification{
+	return []ec2types.TagSpecification{
 		{
-			ResourceType: awssdk.String(resourceTypeSecurityGroup),
-			Tags: append(defaultTags, []*ec2sdk.Tag{
+			ResourceType: resourceTypeSecurityGroup,
+			Tags: append(defaultTags, []ec2types.Tag{
 				{
-					Key:   awssdk.String(tagKeyK8sCluster),
+					Key:   awssdk.String(shared_constants.TagKeyK8sCluster),
 					Value: awssdk.String(p.clusterName),
 				},
 				{
-					Key:   awssdk.String(tagKeyResource),
+					Key:   awssdk.String(shared_constants.TagKeyResource),
 					Value: awssdk.String(tagValueBackend),
 				},
 			}...),
@@ -166,70 +377,48 @@ func (p *defaultBackendSGProvider) buildBackendSGTags(_ context.Context) []*ec2s
 	}
 }
 
-func (p *defaultBackendSGProvider) getBackendSGFromEC2(ctx context.Context, sgName string, vpcID string) (string, error) {
+func (p *defaultBackendSGProvider) getBackendSGFromEC2(ctx context.Context, sgName string, vpcID string) (*ec2types.SecurityGroup, error) {
 	req := &ec2sdk.DescribeSecurityGroupsInput{
-		Filters: []*ec2sdk.Filter{
+		Filters: []ec2types.Filter{
 			{
 				Name:   awssdk.String("vpc-id"),
-				Values: awssdk.StringSlice([]string{vpcID}),
+				Values: []string{vpcID},
 			},
 			{
-				Name:   awssdk.String(fmt.Sprintf("tag:%v", tagKeyK8sCluster)),
-				Values: awssdk.StringSlice([]string{p.clusterName}),
+				Name:   awssdk.String(fmt.Sprintf("tag:%v", shared_constants.TagKeyK8sCluster)),
+				Values: []string{p.clusterName},
 			},
 			{
-				Name:   awssdk.String(fmt.Sprintf("tag:%v", tagKeyResource)),
-				Values: awssdk.StringSlice([]string{tagValueBackend}),
+				Name:   awssdk.String(fmt.Sprintf("tag:%v", shared_constants.TagKeyResource)),
+				Values: []string{tagValueBackend},
 			},
 		},
 	}
-	p.logger.V(1).Info("Queriying existing SG", "vpc-id", vpcID, "name", sgName)
+	p.logger.V(1).Info("Querying existing SG", "vpc-id", vpcID, "name", sgName)
 	sgs, err := p.ec2Client.DescribeSecurityGroupsAsList(ctx, req)
 	if err != nil && !isEC2SecurityGroupNotFoundError(err) {
-		return "", err
+		return nil, err
 	}
 	if len(sgs) > 0 {
-		return awssdk.StringValue(sgs[0].GroupId), nil
+		return &sgs[0], nil
 	}
-	return "", nil
-}
-
-func (p *defaultBackendSGProvider) isBackendSGRequired(ctx context.Context) (bool, error) {
-	ingList := &networking.IngressList{}
-	if err := p.k8sClient.List(ctx, ingList); err != nil {
-		p.logger.Error(err, "Unable to list ingresses")
-		return true, errors.Wrapf(err, "unable to list ingresses")
-	}
-	for _, ing := range ingList.Items {
-		if !ing.DeletionTimestamp.IsZero() {
-			continue
-		}
-		for _, fin := range ing.GetFinalizers() {
-			if fin == implicitGroupFinalizer || strings.HasPrefix(fin, explicitGroupFinalizerPrefix) {
-				return true, nil
-			}
-		}
-	}
-	p.logger.Info("No ingress found, backend SG can be deleted", "SG ID", p.autoGeneratedSG)
-	return false, nil
+	return nil, nil
 }
 
 func (p *defaultBackendSGProvider) releaseSG(ctx context.Context) error {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
-
 	if len(p.autoGeneratedSG) == 0 {
 		return nil
 	}
 
 	if required, err := p.isBackendSGRequired(ctx); required || err != nil {
-		p.logger.V(1).Info("backend SG is required, releaseSG ignore delete")
+		p.logger.V(1).Info("releaseSG ignore delete", "required", required, "err", err)
 		return err
 	}
 	req := &ec2sdk.DeleteSecurityGroupInput{
 		GroupId: awssdk.String(p.autoGeneratedSG),
 	}
-	p.logger.V(1).Info("deleting default backend SG", "ID", p.autoGeneratedSG)
 	if err := runtime.RetryImmediateOnError(p.defaultDeletionPollInterval, p.defaultDeletionTimeout, isSecurityGroupDependencyViolationError, func() error {
 		_, err := p.ec2Client.DeleteSecurityGroupWithContext(ctx, req)
 		return err
@@ -253,17 +442,37 @@ func (p *defaultBackendSGProvider) getBackendSGName() string {
 }
 
 func isSecurityGroupDependencyViolationError(err error) bool {
-	var awsErr awserr.Error
-	if errors.As(err, &awsErr) {
-		return awsErr.Code() == "DependencyViolation"
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.ErrorCode() == "DependencyViolation"
 	}
 	return false
 }
 
 func isEC2SecurityGroupNotFoundError(err error) bool {
-	var awsErr awserr.Error
-	if errors.As(err, &awsErr) {
-		return awsErr.Code() == "InvalidGroup.NotFound"
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.ErrorCode() == "InvalidGroup.NotFound"
 	}
 	return false
+}
+
+func getObjectKey(resourceType ResourceType, resource types.NamespacedName) string {
+	return string(resourceType) + "/" + resource.String()
+}
+
+// convert tags into AWS SDK tag presentation.
+func convertTagsToSDKTags(tags map[string]string) []ec2types.Tag {
+	if len(tags) == 0 {
+		return nil
+	}
+	sdkTags := make([]ec2types.Tag, 0, len(tags))
+
+	for _, key := range sets.StringKeySet(tags).List() {
+		sdkTags = append(sdkTags, ec2types.Tag{
+			Key:   awssdk.String(key),
+			Value: awssdk.String(tags[key]),
+		})
+	}
+	return sdkTags
 }

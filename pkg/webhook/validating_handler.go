@@ -11,7 +11,6 @@ import (
 
 var validatingHandlerLog = ctrl.Log.WithName("validating_handler")
 
-// var _ admission.DecoderInjector = &validatingHandler{}
 var _ admission.Handler = &validatingHandler{}
 
 type validatingHandler struct {

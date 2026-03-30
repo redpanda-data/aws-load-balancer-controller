@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	awssdk "github.com/aws/aws-sdk-go/aws"
+	awssdk "github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/go-logr/logr"
 	"github.com/golang/mock/gomock"
 	"github.com/google/go-cmp/cmp"
@@ -21,6 +21,7 @@ import (
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/k8s"
 	ctrl "sigs.k8s.io/controller-runtime"
 	testclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
@@ -1239,7 +1240,7 @@ func Test_defaultEndpointResolver_ResolvePodEndpoints(t *testing.T) {
 					Pod:  pod4,
 				},
 			},
-			wantContainsPotentialReadyEndpoints: false,
+			wantContainsPotentialReadyEndpoints: true,
 		},
 		{
 			name: "service not found",
@@ -1325,7 +1326,7 @@ func Test_defaultEndpointResolver_ResolvePodEndpoints(t *testing.T) {
 				podInfoRepo:          podInfoRepo,
 				failOpenEnabled:      tt.fields.failOpenEnabled,
 				endpointSliceEnabled: tt.fields.endpointSliceEnabled,
-				logger:               logr.Discard(),
+				logger:               logr.New(&log.NullLogSink{}),
 			}
 			got, gotContainsPotentialReadyEndpoints, err := r.ResolvePodEndpoints(ctx, tt.args.svcKey, tt.args.port, tt.args.opts...)
 			if tt.wantErr != nil {
@@ -2588,9 +2589,10 @@ func Test_buildEndpointsDataFromEndpointSliceList(t *testing.T) {
 
 func Test_buildPodEndpoint(t *testing.T) {
 	type args struct {
-		pod    k8s.PodInfo
-		epAddr string
-		port   int32
+		pod          k8s.PodInfo
+		epAddr       string
+		port         int32
+		quicServerId *string
 	}
 	tests := []struct {
 		name string
@@ -2612,6 +2614,56 @@ func Test_buildPodEndpoint(t *testing.T) {
 				Pod: k8s.PodInfo{
 					Key: types.NamespacedName{Name: "sample-node"},
 				},
+			},
+		},
+		{
+			name: "quic case - default id",
+			args: args{
+				pod: k8s.PodInfo{
+					Key:                 types.NamespacedName{Name: "sample-node"},
+					DefaultQUICServerID: awssdk.String("0xdeadbeef"),
+				},
+				epAddr:       "192.168.1.1",
+				port:         80,
+				quicServerId: awssdk.String("0xdeadbeef"),
+			},
+			want: PodEndpoint{
+				IP:   "192.168.1.1",
+				Port: 80,
+				Pod: k8s.PodInfo{
+					Key:                 types.NamespacedName{Name: "sample-node"},
+					DefaultQUICServerID: awssdk.String("0xdeadbeef"),
+				},
+				QuicServerID: awssdk.String("0xdeadbeef"),
+			},
+		},
+		{
+			name: "quic case - port specific id",
+			args: args{
+				pod: k8s.PodInfo{
+					Key:                 types.NamespacedName{Name: "sample-node"},
+					DefaultQUICServerID: awssdk.String("0xnotused"),
+					PerPortServerIds: map[int32]string{
+						100: "0xalsonotused",
+						80:  "0xdeadbeef",
+					},
+				},
+				epAddr:       "192.168.1.1",
+				port:         80,
+				quicServerId: awssdk.String("0xdeadbeef"),
+			},
+			want: PodEndpoint{
+				IP:   "192.168.1.1",
+				Port: 80,
+				Pod: k8s.PodInfo{
+					Key:                 types.NamespacedName{Name: "sample-node"},
+					DefaultQUICServerID: awssdk.String("0xnotused"),
+					PerPortServerIds: map[int32]string{
+						100: "0xalsonotused",
+						80:  "0xdeadbeef",
+					},
+				},
+				QuicServerID: awssdk.String("0xdeadbeef"),
 			},
 		},
 	}

@@ -2,7 +2,8 @@ package elbv2
 
 import (
 	"context"
-	awssdk "github.com/aws/aws-sdk-go/aws"
+
+	awssdk "github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -15,16 +16,17 @@ import (
 
 // NewTargetGroupSynthesizer constructs targetGroupSynthesizer
 func NewTargetGroupSynthesizer(elbv2Client services.ELBV2, trackingProvider tracking.Provider, taggingManager TaggingManager,
-	tgManager TargetGroupManager, logger logr.Logger, featureGates config.FeatureGates, stack core.Stack) *targetGroupSynthesizer {
+	tgManager TargetGroupManager, logger logr.Logger, featureGates config.FeatureGates, stack core.Stack, findSDKTargetGroups func() TargetGroupsResult) *targetGroupSynthesizer {
 	return &targetGroupSynthesizer{
-		elbv2Client:      elbv2Client,
-		trackingProvider: trackingProvider,
-		taggingManager:   taggingManager,
-		tgManager:        tgManager,
-		featureGates:     featureGates,
-		logger:           logger,
-		stack:            stack,
-		unmatchedSDKTGs:  nil,
+		elbv2Client:         elbv2Client,
+		trackingProvider:    trackingProvider,
+		taggingManager:      taggingManager,
+		tgManager:           tgManager,
+		featureGates:        featureGates,
+		logger:              logger,
+		stack:               stack,
+		unmatchedSDKTGs:     nil,
+		findSDKTargetGroups: findSDKTargetGroups,
 	}
 }
 
@@ -37,17 +39,19 @@ type targetGroupSynthesizer struct {
 	featureGates     config.FeatureGates
 	logger           logr.Logger
 
-	stack           core.Stack
-	unmatchedSDKTGs []TargetGroupWithTags
+	stack               core.Stack
+	unmatchedSDKTGs     []TargetGroupWithTags
+	findSDKTargetGroups func() TargetGroupsResult
 }
 
 func (s *targetGroupSynthesizer) Synthesize(ctx context.Context) error {
 	var resTGs []*elbv2model.TargetGroup
 	s.stack.ListResources(&resTGs)
-	sdkTGs, err := s.findSDKTargetGroups(ctx)
-	if err != nil {
-		return err
+	res := s.findSDKTargetGroups()
+	if res.Err != nil {
+		return res.Err
 	}
+	sdkTGs := res.TargetGroups
 	matchedResAndSDKTGs, unmatchedResTGs, unmatchedSDKTGs, err := matchResAndSDKTargetGroups(resTGs, sdkTGs,
 		s.trackingProvider.ResourceIDTagKey(), s.featureGates)
 	if err != nil {
@@ -82,15 +86,6 @@ func (s *targetGroupSynthesizer) PostSynthesize(ctx context.Context) error {
 		}
 	}
 	return nil
-}
-
-// findSDKTargetGroups will find all AWS TargetGroups created for stack.
-func (s *targetGroupSynthesizer) findSDKTargetGroups(ctx context.Context) ([]TargetGroupWithTags, error) {
-	stackTags := s.trackingProvider.StackTags(s.stack)
-	stackTagsLegacy := s.trackingProvider.StackTagsLegacy(s.stack)
-	return s.taggingManager.ListTargetGroups(ctx,
-		tracking.TagsAsTagFilter(stackTags),
-		tracking.TagsAsTagFilter(stackTagsLegacy))
 }
 
 type resAndSDKTargetGroupPair struct {
@@ -154,7 +149,7 @@ func mapSDKTargetGroupByResourceID(sdkTGs []TargetGroupWithTags, resourceIDTagKe
 	for _, sdkTG := range sdkTGs {
 		resourceID, ok := sdkTG.Tags[resourceIDTagKey]
 		if !ok {
-			return nil, errors.Errorf("unexpected targetGroup with no resourceID: %v", awssdk.StringValue(sdkTG.TargetGroup.TargetGroupArn))
+			return nil, errors.Errorf("unexpected targetGroup with no resourceID: %v", awssdk.ToString(sdkTG.TargetGroup.TargetGroupArn))
 		}
 		sdkTGsByID[resourceID] = append(sdkTGsByID[resourceID], sdkTG)
 	}
@@ -163,16 +158,22 @@ func mapSDKTargetGroupByResourceID(sdkTGs []TargetGroupWithTags, resourceIDTagKe
 
 // isSDKTargetGroupRequiresReplacement checks whether a sdk TargetGroup requires replacement to fulfill a TargetGroup resource.
 func isSDKTargetGroupRequiresReplacement(sdkTG TargetGroupWithTags, resTG *elbv2model.TargetGroup, featureGates config.FeatureGates) bool {
-	if string(resTG.Spec.TargetType) != awssdk.StringValue(sdkTG.TargetGroup.TargetType) {
+	if string(resTG.Spec.TargetType) != string(sdkTG.TargetGroup.TargetType) {
 		return true
 	}
-	if string(resTG.Spec.Protocol) != awssdk.StringValue(sdkTG.TargetGroup.Protocol) {
+
+	if string(resTG.Spec.Protocol) != string(sdkTG.TargetGroup.Protocol) {
 		return true
 	}
 	if resTG.Spec.ProtocolVersion != nil {
-		if string(*resTG.Spec.ProtocolVersion) != awssdk.StringValue(sdkTG.TargetGroup.ProtocolVersion) {
+		if string(*resTG.Spec.ProtocolVersion) != awssdk.ToString(sdkTG.TargetGroup.ProtocolVersion) {
 			return true
 		}
+	}
+
+	// Check if TargetControlPort has changed - requires replacement
+	if isSDKTargetGroupTargetControlPortDrifted(resTG.Spec, sdkTG) {
+		return true
 	}
 
 	return isSDKTargetGroupRequiresReplacementDueToNLBHealthCheck(sdkTG, resTG, featureGates)
@@ -183,23 +184,52 @@ func isSDKTargetGroupRequiresReplacementDueToNLBHealthCheck(sdkTG TargetGroupWit
 	if resTG.Spec.HealthCheckConfig == nil || featureGates.Enabled(config.NLBHealthCheckAdvancedConfig) {
 		return false
 	}
-	if resTG.Spec.Protocol != elbv2model.ProtocolTCP && resTG.Spec.Protocol != elbv2model.ProtocolUDP &&
-		resTG.Spec.Protocol != elbv2model.ProtocolTCP_UDP && resTG.Spec.Protocol != elbv2model.ProtocolTLS {
+	if isL4TargetGroup(resTG.Spec.Protocol) {
 		return false
 	}
 	sdkObj := sdkTG.TargetGroup
 	hcConfig := *resTG.Spec.HealthCheckConfig
-	if hcConfig.Protocol != nil && string(*hcConfig.Protocol) != awssdk.StringValue(sdkObj.HealthCheckProtocol) {
+	if &hcConfig.Protocol != nil && string(hcConfig.Protocol) != string(sdkObj.HealthCheckProtocol) {
 		return true
 	}
-	if hcConfig.Matcher != nil && (sdkObj.Matcher == nil || awssdk.StringValue(hcConfig.Matcher.GRPCCode) != awssdk.StringValue(sdkObj.Matcher.GrpcCode) || awssdk.StringValue(hcConfig.Matcher.HTTPCode) != awssdk.StringValue(sdkObj.Matcher.HttpCode)) {
+	if hcConfig.Matcher != nil && (sdkObj.Matcher == nil || awssdk.ToString(hcConfig.Matcher.GRPCCode) != awssdk.ToString(sdkObj.Matcher.GrpcCode) || awssdk.ToString(hcConfig.Matcher.HTTPCode) != awssdk.ToString(sdkObj.Matcher.HttpCode)) {
 		return true
 	}
-	if hcConfig.IntervalSeconds != nil && awssdk.Int64Value(hcConfig.IntervalSeconds) != awssdk.Int64Value(sdkObj.HealthCheckIntervalSeconds) {
+	if hcConfig.IntervalSeconds != nil && awssdk.ToInt32(hcConfig.IntervalSeconds) != awssdk.ToInt32(sdkObj.HealthCheckIntervalSeconds) {
 		return true
 	}
-	if hcConfig.TimeoutSeconds != nil && awssdk.Int64Value(hcConfig.TimeoutSeconds) != awssdk.Int64Value(sdkObj.HealthCheckTimeoutSeconds) {
+	if hcConfig.TimeoutSeconds != nil && awssdk.ToInt32(hcConfig.TimeoutSeconds) != awssdk.ToInt32(sdkObj.HealthCheckTimeoutSeconds) {
 		return true
 	}
 	return false
+}
+
+func isL4TargetGroup(protocol elbv2model.Protocol) bool {
+	switch protocol {
+	case elbv2model.ProtocolTCP:
+	case elbv2model.ProtocolUDP:
+	case elbv2model.ProtocolTLS:
+	case elbv2model.ProtocolQUIC:
+	case elbv2model.ProtocolTCP_QUIC:
+	case elbv2model.ProtocolTCP_UDP:
+		return true
+	default:
+		return false
+	}
+	return false
+}
+
+func isSDKTargetGroupTargetControlPortDrifted(tgSpec elbv2model.TargetGroupSpec, sdkTG TargetGroupWithTags) bool {
+	desiredPort := tgSpec.TargetControlPort
+	currentPort := sdkTG.TargetGroup.TargetControlPort
+
+	if desiredPort == nil && currentPort == nil {
+		return false
+	}
+
+	if (desiredPort == nil) != (currentPort == nil) {
+		return true
+	}
+
+	return awssdk.ToInt32(desiredPort) != awssdk.ToInt32(currentPort)
 }

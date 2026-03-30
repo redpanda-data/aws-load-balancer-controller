@@ -25,6 +25,35 @@ const (
 	TargetGroupBindingEventReasonFailedRemoveFinalizer  = "FailedRemoveFinalizer"
 	TargetGroupBindingEventReasonFailedUpdateStatus     = "FailedUpdateStatus"
 	TargetGroupBindingEventReasonFailedCleanup          = "FailedCleanup"
+	TargetGroupBindingEventReasonFailedNetworkReconcile = "FailedNetworkReconcile"
 	TargetGroupBindingEventReasonBackendNotFound        = "BackendNotFound"
 	TargetGroupBindingEventReasonSuccessfullyReconciled = "SuccessfullyReconciled"
+
+	// Gateway events
+	GatewayEventReasonFailedAddFinalizer             = "FailedAddFinalizer"
+	GatewayEventReasonFailedRemoveFinalizer          = "FailedRemoveFinalizer"
+	GatewayEventReasonFailedDeleteWithRoutesAttached = "FailedDeleteRoutesAttached"
+	GatewayEventReasonFailedUpdateStatus             = "FailedUpdateStatus"
+	GatewayEventReasonSuccessfullyReconciled         = "SuccessfullyReconciled"
+	GatewayEventReasonFailedDeployModel              = "FailedDeployModel"
+	GatewayEventReasonFailedBuildModel               = "FailedBuildModel"
+
+	// Target Group Configuration events
+	TargetGroupConfigurationEventReasonFailedAddFinalizer    = "FailedAddFinalizer"
+	TargetGroupConfigurationEventReasonFailedRemoveFinalizer = "FailedRemoveFinalizer"
+
+	// Load Balancer Configuration events
+	LoadBalancerConfigurationEventReasonFailedAddFinalizer    = "FailedAddFinalizer"
+	LoadBalancerConfigurationEventReasonFailedRemoveFinalizer = "FailedRemoveFinalizer"
+
+	// GlobalAccelerator events
+	GlobalAcceleratorEventReasonFailedAddFinalizer     = "FailedAddFinalizer"
+	GlobalAcceleratorEventReasonFailedRemoveFinalizer  = "FailedRemoveFinalizer"
+	GlobalAcceleratorEventReasonFailedUpdateStatus     = "FailedUpdateStatus"
+	GlobalAcceleratorEventReasonFailedCleanup          = "FailedCleanup"
+	GlobalAcceleratorEventReasonFailedBuildModel       = "FailedBuildModel"
+	GlobalAcceleratorEventReasonFailedEndpointLoad     = "FailedEndpointLoad"
+	GlobalAcceleratorEventReasonFailedDeploy           = "FailedDeploy"
+	GlobalAcceleratorEventReasonWarningEndpoints       = "WarningEndpoints"
+	GlobalAcceleratorEventReasonSuccessfullyReconciled = "SuccessfullyReconciled"
 )

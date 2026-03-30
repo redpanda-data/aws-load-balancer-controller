@@ -1,7 +1,7 @@
 package service
 
 import (
-	awssdk "github.com/aws/aws-sdk-go/aws"
+	awssdk "github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -169,7 +169,7 @@ func Test_defaultServiceUtils_IsServiceSupported(t *testing.T) {
 			},
 		},
 		{
-			name: "lb type ClusterIP, RestrictToLoadBanalcerOnly enabled",
+			name: "lb type ClusterIP, RestrictToLoadBalancerOnly enabled",
 			svc: &corev1.Service{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "nlb-ip",

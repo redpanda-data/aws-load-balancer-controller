@@ -1,7 +1,6 @@
 package ingress
 
 import (
-	"github.com/aws/aws-sdk-go/service/elbv2"
 	"github.com/pkg/errors"
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
@@ -69,6 +68,10 @@ type TargetGroupTuple struct {
 	// The Amazon Resource Name (ARN) of the target group.
 	TargetGroupARN *string `json:"targetGroupARN"`
 
+	// The Name of the target group.
+	// +optional
+	TargetGroupName *string `json:"targetGroupName,omitempty"`
+
 	// the K8s service Name
 	ServiceName *string `json:"serviceName"`
 
@@ -77,12 +80,16 @@ type TargetGroupTuple struct {
 
 	// The weight.
 	// +optional
-	Weight *int64 `json:"weight,omitempty"`
+	Weight *int32 `json:"weight,omitempty"`
 }
 
 func (t *TargetGroupTuple) validate() error {
-	if (t.TargetGroupARN != nil) == (t.ServiceName != nil) {
-		return errors.New("precisely one of targetGroupARN and serviceName can be specified")
+	if t.TargetGroupARN == nil && t.TargetGroupName == nil && t.ServiceName == nil {
+		return errors.New("missing serviceName or targetGroupARN/targetGroupName")
+	}
+
+	if (t.TargetGroupARN != nil || t.TargetGroupName != nil) && t.ServiceName != nil {
+		return errors.New("either serviceName or targetGroupARN/targetGroupName can be specified")
 	}
 
 	if t.ServiceName != nil && t.ServicePort == nil {
@@ -99,7 +106,7 @@ type TargetGroupStickinessConfig struct {
 
 	// The time period, in seconds, during which requests from a client should be routed to the same target group.
 	// +optional
-	DurationSeconds *int64 `json:"durationSeconds,omitempty"`
+	DurationSeconds *int32 `json:"durationSeconds,omitempty"`
 }
 
 // Information about a forward action.
@@ -147,6 +154,9 @@ type Action struct {
 	// or more target groups, use ForwardConfig instead.
 	TargetGroupARN *string `json:"targetGroupARN"`
 
+	// Name of the target group. Can be specified instead of TargetGroupARN.
+	TargetGroupName *string `json:"targetGroupName,omitempty"`
+
 	// [Application Load Balancer] Information for creating an action that returns a custom HTTP response.
 	// +optional
 	FixedResponseConfig *FixedResponseActionConfig `json:"fixedResponseConfig,omitempty"`
@@ -162,23 +172,26 @@ type Action struct {
 
 func (a *Action) validate() error {
 	switch a.Type {
-	case elbv2.ActionTypeEnumFixedResponse:
+	case ActionTypeFixedResponse:
 		if a.FixedResponseConfig == nil {
 			return errors.New("missing FixedResponseConfig")
 		}
 		if err := a.FixedResponseConfig.validate(); err != nil {
 			return errors.Wrap(err, "invalid FixedResponseConfig")
 		}
-	case elbv2.ActionTypeEnumRedirect:
+	case ActionTypeRedirect:
 		if a.RedirectConfig == nil {
 			return errors.New("missing RedirectConfig")
 		}
 		if err := a.RedirectConfig.validate(); err != nil {
 			return errors.Wrap(err, "invalid RedirectConfig")
 		}
-	case elbv2.ActionTypeEnumForward:
-		if (a.TargetGroupARN != nil) == (a.ForwardConfig != nil) {
-			return errors.New("precisely one of TargetGroupArn and ForwardConfig can be specified")
+	case ActionTypeForward:
+		if a.TargetGroupARN == nil && a.TargetGroupName == nil && a.ForwardConfig == nil {
+			return errors.New("missing ForwardConfig or TargetGroupARN/TargetGroupName")
+		}
+		if (a.TargetGroupARN != nil || a.TargetGroupName != nil) && (a.ForwardConfig != nil) {
+			return errors.New("either ForwardConfig or TargetGroupARN/TargetGroupName can be specified")
 		}
 		if a.ForwardConfig != nil {
 			if err := a.ForwardConfig.validate(); err != nil {
@@ -204,13 +217,20 @@ const (
 
 // Information for a host header condition.
 type HostHeaderConditionConfig struct {
-	// One or more host names.
-	Values []string `json:"values"`
+	// One or more regex expressions for request host header.
+	// +optional
+	RegexValues []string `json:"regexValues,omitempty"`
+	// One or more value expressions for request host header.
+	// +optional
+	Values []string `json:"values,omitempty"`
 }
 
 func (c *HostHeaderConditionConfig) validate() error {
-	if len(c.Values) == 0 {
-		return errors.New("values cannot be empty")
+	if len(c.Values) == 0 && len(c.RegexValues) == 0 {
+		return errors.New("values or regexValues must be specified")
+	}
+	if len(c.Values) != 0 && len(c.RegexValues) != 0 {
+		return errors.New("precisely one of values and regexValues can be specified")
 	}
 	return nil
 }
@@ -219,13 +239,20 @@ func (c *HostHeaderConditionConfig) validate() error {
 type HTTPHeaderConditionConfig struct {
 	// The name of the HTTP header field.
 	HTTPHeaderName string `json:"httpHeaderName"`
-	// One or more strings to compare against the value of the HTTP header.
-	Values []string `json:"values"`
+	// One or more regex matches for request HTTP headers.
+	// +optional
+	RegexValues []string `json:"regexValues,omitempty"`
+	// One or more value matches for request HTTP headers.
+	// +optional
+	Values []string `json:"values,omitempty"`
 }
 
 func (c *HTTPHeaderConditionConfig) validate() error {
-	if len(c.Values) == 0 {
-		return errors.New("values cannot be empty")
+	if len(c.Values) == 0 && len(c.RegexValues) == 0 {
+		return errors.New("values or regexValues must be specified")
+	}
+	if len(c.Values) != 0 && len(c.RegexValues) != 0 {
+		return errors.New("precisely one of values and regexValues can be specified")
 	}
 	return nil
 }
@@ -245,13 +272,20 @@ func (c *HTTPRequestMethodConditionConfig) validate() error {
 
 // Information about a path pattern condition.
 type PathPatternConditionConfig struct {
-	// One or more path patterns to compare against the request URL.
-	Values []string `json:"values"`
+	// One or more regex matches for request URL path.
+	// +optional
+	RegexValues []string `json:"regexValues,omitempty"`
+	// One or more value matches for request URL path.
+	// +optional
+	Values []string `json:"values,omitempty"`
 }
 
 func (c *PathPatternConditionConfig) validate() error {
-	if len(c.Values) == 0 {
-		return errors.New("values cannot be empty")
+	if len(c.Values) == 0 && len(c.RegexValues) == 0 {
+		return errors.New("values or regexValues must be specified")
+	}
+	if len(c.Values) != 0 && len(c.RegexValues) != 0 {
+		return errors.New("precisely one of values and regexValues can be specified")
 	}
 	return nil
 }
@@ -322,7 +356,7 @@ type RuleCondition struct {
 	SourceIPConfig *SourceIPConditionConfig `json:"sourceIPConfig"`
 }
 
-func (c *RuleCondition) validate() error {
+func (c *RuleCondition) Validate() error {
 	switch c.Field {
 	case RuleConditionFieldHostHeader:
 		if c.HostHeaderConfig == nil {
@@ -413,4 +447,86 @@ type AuthIDPConfigOIDC struct {
 	// The query parameters (up to 10) to include in the redirect request to the authorization endpoint.
 	// +optional
 	AuthenticationRequestExtraParams map[string]string `json:"authenticationRequestExtraParams,omitempty"`
+}
+
+type TransformType string
+
+const (
+	TransformTypeUrlRewrite        TransformType = "url-rewrite"
+	TransformTypeHostHeaderRewrite TransformType = "host-header-rewrite"
+)
+
+type RewriteConfig struct {
+	// Regex expression
+	Regex string `json:"regex"`
+	// Replacement expression
+	Replace string `json:"replace"`
+}
+
+type RewriteConfigObject struct {
+	// Rewrites for the transform
+	Rewrites []RewriteConfig `json:"rewrites"`
+}
+
+type Transform struct {
+	// The type of transform
+	Type TransformType `json:"type"`
+	// Information for a host header rewrite.
+	// +optional
+	HostHeaderRewriteConfig *RewriteConfigObject `json:"hostHeaderRewriteConfig,omitempty"`
+	// Information for a URL rewrite.
+	// +optional
+	UrlRewriteConfig *RewriteConfigObject `json:"urlRewriteConfig,omitempty"`
+}
+
+func (t *Transform) Validate() error {
+	switch t.Type {
+	case TransformTypeHostHeaderRewrite:
+		if t.HostHeaderRewriteConfig == nil {
+			return errors.New("missing hostHeaderRewriteConfig")
+		}
+		if len(t.HostHeaderRewriteConfig.Rewrites) == 0 {
+			return errors.New("hostHeaderRewriteConfig.rewrites cannot be empty")
+		}
+	case TransformTypeUrlRewrite:
+		if t.UrlRewriteConfig == nil {
+			return errors.New("missing urlRewriteConfig")
+		}
+		if len(t.UrlRewriteConfig.Rewrites) == 0 {
+			return errors.New("urlRewriteConfig.rewrites cannot be empty")
+		}
+	default:
+		return errors.Errorf("unknown transform type: %v", t.Type)
+	}
+	return nil
+}
+
+// The format of an additional claim's value(s) used in JWT validation.
+type jwtAdditionalClaimFormat string
+
+const (
+	FormatSingleString         jwtAdditionalClaimFormat = "single-string"
+	FormatStringArray          jwtAdditionalClaimFormat = "string-array"
+	FormatSpaceSeparatedValues jwtAdditionalClaimFormat = "space-separated-values"
+)
+
+// An additional claim to validate during JWT validation.
+type JwtAdditionalClaim struct {
+	// The format of the claim value(s).
+	Format jwtAdditionalClaimFormat `json:"format"`
+	// The claim name.
+	Name string `json:"name"`
+	// The claim values.
+	Values []string `json:"values"`
+}
+
+// Information about an action that performs JSON Web Token (JWT) validation prior to the routing action.
+type JwtValidationConfig struct {
+	// The JSON Web Key Set (JWKS) endpoint containing the public keys used to verify the JWT.
+	JwksEndpoint string `json:"jwksEndpoint"`
+	// The issuer of the JWT.
+	Issuer string `json:"issuer"`
+	// Any additional claims in the JWT that should be validated.
+	// +optional
+	AdditionalClaims []JwtAdditionalClaim `json:"additionalClaims,omitempty"`
 }

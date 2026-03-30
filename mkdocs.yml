@@ -12,7 +12,9 @@ nav:
     - Installation Guide: deploy/installation.md
     - Configurations: deploy/configurations.md
     - Subnet Discovery: deploy/subnet_discovery.md
+    - Security Group Management: deploy/security_groups.md
     - Pod Readiness Gate: deploy/pod_readiness_gate.md
+    - Scaling your LBC: deploy/scaling.md
     - Upgrade:
           - Migrate v1 to v2: deploy/upgrade/migrate_v1_v2.md
   - Guide:
@@ -27,12 +29,39 @@ nav:
       - TargetGroupBinding:
           - TargetGroupBinding: guide/targetgroupbinding/targetgroupbinding.md
           - Specification: guide/targetgroupbinding/spec.md
+      - Gateway API (New):
+          - Overview: guide/gateway/gateway.md
+          - L4 Routing: guide/gateway/l4gateway.md
+          - L7 Routing: guide/gateway/l7gateway.md
+          - Customizations:
+              - How customizations works: guide/gateway/customization.md
+              - LoadBalancerConfiguration: guide/gateway/loadbalancerconfig.md
+              - TargetGroupConfiguration: guide/gateway/targetgroupconfig.md
+              - ListenerRuleConfiguration: guide/gateway/listenerruleconfig.md
+              - Gateway Chaining: guide/gateway/gateway_chaining.md
+              - Specification: guide/gateway/spec.md
+      - AWS Global Accelerator (New):
+          - Overview: guide/globalaccelerator/aga-controller.md
+          - Installation: guide/globalaccelerator/installation.md
+          - Examples: guide/globalaccelerator/examples.md
+          - Specification: guide/globalaccelerator/spec.md
       - Tasks:
           - Cognito Authentication: guide/tasks/cognito_authentication.md
           - SSL Redirect: guide/tasks/ssl_redirect.md
+          - URL Rewrite: guide/tasks/url_rewrite.md
       - Use Cases:
-        - NLB TLS Termiation: guide/use_cases/nlb_tls_termination/index.md
+        - NLB TLS Termination: guide/use_cases/nlb_tls_termination/index.md
         - Externally Managed Load Balancer: guide/use_cases/self_managed_lb/index.md
+        - Frontend Security Groups: guide/use_cases/frontend_sg/index.md
+        - Blue/Green: guide/use_cases/blue_green/index.md
+        - MultiCluster Target Groups: guide/use_cases/multi_cluster/index.md
+        - QUIC: guide/use_cases/quic/index.md
+        - Legacy Target Groups: guide/use_cases/legacy_app_integration/index.md
+      - Metrics:
+          - Prometheus: guide/metrics/prometheus/index.md
+      - ALB Target Optimizer:
+          - Target Control Agent : guide/ingress/alb-target-agent.md
+          - ALBTargetControlConfig : guide/ingress/alb-target-agent-spec.md
   - Examples:
     - EchoServer: examples/echo_server.md
     - gRPCServer: examples/grpc_server.md
@@ -67,8 +96,8 @@ markdown_extensions:
   - pymdownx.superfences
   - pymdownx.tabbed
   - pymdownx.emoji:
-      emoji_index: !!python/name:materialx.emoji.twemoji
-      emoji_generator: !!python/name:materialx.emoji.to_svg
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
   - toc:
       permalink: true
 extra_css:

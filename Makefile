@@ -2,12 +2,31 @@
 MAKEFILE_PATH = $(dir $(realpath -s $(firstword $(MAKEFILE_LIST))))
 
 # Image URL to use all building/pushing image targets
-IMG ?= public.ecr.aws/eks/aws-load-balancer-controller:v2.4.7
+IMG ?= public.ecr.aws/eks/aws-load-balancer-controller:v3.0.0
+# Image URL to use for builder stage in Docker build
+GOLANG_VERSION ?= $(shell cat .go-version)
+BUILD_IMAGE ?= public.ecr.aws/docker/library/golang:$(GOLANG_VERSION)
+# Image URL to use for base layer in Docker build
+BASE_IMAGE ?= public.ecr.aws/eks-distro-build-tooling/eks-distro-minimal-base-nonroot:2025-12-09-1765306943.2023
+IMG_PLATFORM ?= linux/amd64,linux/arm64
+# ECR doesn't appear to support SPDX SBOM
+IMG_SBOM ?= none
+
 
 CRD_OPTIONS ?= "crd:crdVersions=v1"
 
 # Whether to override AWS SDK models. set to 'y' when we need to build against custom AWS SDK models.
 AWS_SDK_MODEL_OVERRIDE ?= "n"
+
+# Move Gateway API CRDs from bases directory to gateway directory
+MOVE_GATEWAY_CRDS = mv config/crd/bases/gateway.k8s.aws_* config/crd/gateway/
+
+# Move AGA CRDs from bases directory to aga directory
+MOVE_AGA_CRDS = mkdir -p config/crd/aga && mv config/crd/bases/aga.k8s.aws_* config/crd/aga/
+
+# Copy combined Gateway API CRDs from bases directory to helm directory
+COPY_GATEWAY_CRDS_TO_HELM = cp config/crd/gateway/gateway-crds.yaml helm/aws-load-balancer-controller/crds/gateway-crds.yaml
+
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -16,11 +35,14 @@ else
 GOBIN=$(shell go env GOBIN)
 endif
 
+export GOSUMDB = sum.golang.org
+export GOTOOLCHAIN = go$(GOLANG_VERSION)
+
 all: controller
 
 # Run tests
 test: generate fmt vet manifests helm-lint
-	ASSUME_NO_MOVING_GC_UNSAFE_RISK_IT_WITH=go1.20 go test -race ./pkg/... ./webhooks/... -coverprofile cover.out
+	go test -race ./pkg/... ./webhooks/... ./controllers/... -coverprofile cover.out
 
 # Build controller binary
 controller: generate fmt vet
@@ -49,8 +71,16 @@ manifests: controller-gen kustomize
 	yq eval '.metadata.name = "webhook"' -i config/webhook/manifests.yaml
 
 crds: manifests
+	$(MOVE_GATEWAY_CRDS)
+	$(MOVE_AGA_CRDS)
 	$(KUSTOMIZE) build config/crd > helm/aws-load-balancer-controller/crds/crds.yaml
-
+	$(KUSTOMIZE) build config/crd/gateway > config/crd/gateway/gateway-crds.yaml
+	echo '---' > config/crd/gateway/gateway-crds.yaml
+	$(KUSTOMIZE) build config/crd/gateway >> config/crd/gateway/gateway-crds.yaml
+	$(COPY_GATEWAY_CRDS_TO_HELM)
+	$(KUSTOMIZE) build config/crd/aga > config/crd/aga/aga-crds.yaml
+	echo '---' > config/crd/aga/aga-crds.yaml
+	$(KUSTOMIZE) build config/crd/aga >> config/crd/aga/aga-crds.yaml
 
 # Run go fmt against code
 fmt:
@@ -64,8 +94,10 @@ helm-lint:
 	${MAKEFILE_PATH}/test/helm/helm-lint.sh
 
 # Generate code
-generate: aws-sdk-model-override controller-gen
+.PHONY: generate
+generate: aws-sdk-model-override controller-gen mockgen
 	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./..."
+	MOCKGEN=$(MOCKGEN) ./scripts/gen_mocks.sh
 
 aws-sdk-model-override:
 	@if [ "$(AWS_SDK_MODEL_OVERRIDE)" = "y" ] ; then \
@@ -74,29 +106,54 @@ aws-sdk-model-override:
 		./scripts/aws_sdk_model_override/cleanup.sh ; \
 	fi
 
+.PHONY: docker-push
+docker-push: aws-load-balancer-controller-push
 
-# Push the docker image
-docker-push:
+.PHONY: aws-load-balancer-controller-push
+aws-load-balancer-controller-push: ko
+	KO_DOCKER_REPO=$(firstword $(subst :, ,${IMG})) \
+    GIT_VERSION=$(shell git describe --tags --dirty --always) \
+    GIT_COMMIT=$(shell git rev-parse HEAD)  \
+    BUILD_DATE=$(shell date +%Y-%m-%dT%H:%M:%S%z) \
+    ko build --tags $(word 2,$(subst :, ,${IMG})) --platform=${IMG_PLATFORM} --bare --sbom ${IMG_SBOM} .
+
+# Push the docker image using docker buildx
+docker-push-w-buildx:
 	docker buildx build . --target bin \
         		--tag $(IMG) \
-        		--push \
-        		--platform linux/amd64,linux/arm64
+				--build-arg BASE_IMAGE=$(BASE_IMAGE) \
+				--build-arg BUILD_IMAGE=$(BUILD_IMAGE) \
+				--push \
+        		--platform ${IMG_PLATFORM}
 
-# find or download controller-gen
-# download controller-gen if necessary
+# download controller-gen v0.19.0
 controller-gen:
-ifeq (, $(shell which controller-gen))
 	@{ \
 	set -e ;\
 	CONTROLLER_GEN_TMP_DIR=$$(mktemp -d) ;\
 	cd $$CONTROLLER_GEN_TMP_DIR ;\
 	go mod init tmp ;\
-	go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.14.0 ;\
+	go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.19.0 ;\
 	rm -rf $$CONTROLLER_GEN_TMP_DIR ;\
 	}
 CONTROLLER_GEN=$(GOBIN)/controller-gen
+
+# find or download mockgen
+# download mockgen if necessary
+.PHONY: mockgen
+mockgen:
+ifeq (, $(shell which mockgen))
+	@{ \
+	set -e ;\
+	MOCKGEN_TMP_DIR=$$(mktemp -d) ;\
+	cd $$MOCKGEN_TMP_DIR ;\
+	go mod init tmp ;\
+	go install github.com/golang/mock/mockgen@v1.6.0 ;\
+	rm -rf $$MOCKGEN_TMP_DIR ;\
+	}
+MOCKGEN=$(GOBIN)/mockgen
 else
-CONTROLLER_GEN=$(shell which controller-gen)
+MOCKGEN=$(shell which mockgen)
 endif
 
 # install kustomize if not found
@@ -115,13 +172,17 @@ else
 KUSTOMIZE=$(shell which kustomize)
 endif
 
+.PHONY: ko
+ko:
+	hack/install-ko.sh
+
 # preview docs
 docs-preview: docs-dependencies
 	pipenv run mkdocs serve
 
 # publish the versioned docs using mkdocs mike util
 docs-publish: docs-dependencies
-	pipenv run mike deploy v2.4 latest -p --update-aliases
+	pipenv run mike deploy v3.0 latest -p --update-aliases
 
 # install dependencies needed to preview and publish docs
 docs-dependencies:
@@ -131,8 +192,16 @@ lint:
 	echo "TODO"
 
 .PHONY: quick-ci
-quick-ci: verify-versions
+quick-ci: verify-versions verify-generate verify-crds
 	echo "Done!"
+
+.PHONY: verify-generate
+verify-generate:
+	hack/verify-generate.sh
+
+.PHONY: verify-crds
+verify-crds:
+	hack/verify-crds.sh
 
 .PHONY: verify-versions
 verify-versions:
@@ -143,3 +212,21 @@ unit-test:
 
 e2e-test:
 	./scripts/ci_e2e_test.sh
+
+# generate gateway api CRD spec doc
+.PHONY: gw-api-ref-docs
+gw-api-ref-docs:
+	crd-ref-docs \
+		--source-path=${PWD}/apis/gateway/ \
+		--config=crd-ref-docs.yaml \
+		--renderer=markdown \
+		--output-path=${PWD}/docs/guide/gateway/spec.md
+
+# generate aga CRD spec doc
+.PHONY: aga-ref-docs
+aga-ref-docs:
+	crd-ref-docs \
+		--source-path=${PWD}/apis/aga/ \
+		--config=crd-ref-docs.yaml \
+		--renderer=markdown \
+		--output-path=${PWD}/docs/guide/globalaccelerator/spec.md

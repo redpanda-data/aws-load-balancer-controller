@@ -7,7 +7,19 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - configmaps
+  verbs:
+  - create
+  - delete
+  - get
+  - update
+- apiGroups:
+  - ""
+  resources:
   - endpoints
+  - namespaces
+  - nodes
+  - pods
   verbs:
   - get
   - list
@@ -22,31 +34,8 @@ rules:
 - apiGroups:
   - ""
   resources:
-  - namespaces
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - ""
-  resources:
-  - nodes
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - ""
-  resources:
-  - pods
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - ""
-  resources:
   - pods/status
+  - services/status
   verbs:
   - patch
   - update
@@ -61,9 +50,19 @@ rules:
   - update
   - watch
 - apiGroups:
-  - ""
+  - aga.k8s.aws
   resources:
-  - services/status
+  - globalaccelerators
+  verbs:
+  - get
+  - list
+  - patch
+  - watch
+- apiGroups:
+  - aga.k8s.aws
+  resources:
+  - globalaccelerators/finalizers
+  - globalaccelerators/status
   verbs:
   - patch
   - update
@@ -75,6 +74,12 @@ rules:
   - get
   - list
   - watch
+- apiGroups:
+  - elbv2.k8s.aws
+  resources:
+  - albtargetcontrolconfigs
+  verbs:
+  - get
 - apiGroups:
   - elbv2.k8s.aws
   resources:
@@ -104,6 +109,7 @@ rules:
   - update
 - apiGroups:
   - extensions
+  - networking.k8s.io
   resources:
   - ingresses
   verbs:
@@ -114,10 +120,96 @@ rules:
   - watch
 - apiGroups:
   - extensions
+  - networking.k8s.io
   resources:
   - ingresses/status
   verbs:
   - patch
+  - update
+- apiGroups:
+  - gateway.k8s.aws
+  resources:
+  - listenerruleconfigurations
+  - loadbalancerconfigurations
+  - targetgroupconfigurations
+  verbs:
+  - get
+  - list
+  - patch
+  - watch
+- apiGroups:
+  - gateway.k8s.aws
+  resources:
+  - listenerruleconfigurations/finalizers
+  - loadbalancerconfigurations/finalizers
+  - targetgroupconfigurations/finalizers
+  verbs:
+  - patch
+  - update
+- apiGroups:
+  - gateway.k8s.aws
+  resources:
+  - listenerruleconfigurations/status
+  - loadbalancerconfigurations/status
+  - targetgroupconfigurations/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - gateway.networking.k8s.io
+  resources:
+  - gatewayclasses
+  - gateways
+  - referencegrants
+  verbs:
+  - get
+  - list
+  - patch
+  - watch
+- apiGroups:
+  - gateway.networking.k8s.io
+  resources:
+  - gatewayclasses/finalizers
+  - gateways/finalizers
+  verbs:
+  - patch
+  - update
+- apiGroups:
+  - gateway.networking.k8s.io
+  resources:
+  - gatewayclasses/status
+  - gateways/status
+  - grpcroutes/status
+  - httproutes/status
+  - tcproutes/status
+  - tlsroutes/status
+  - udproutes/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - gateway.networking.k8s.io
+  resources:
+  - grpcroutes
+  - httproutes
+  - tcproutes
+  - tlsroutes
+  - udproutes
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - gateway.networking.k8s.io
+  resources:
+  - grpcroutes/finalizers
+  - httproutes/finalizers
+  - tcproutes/finalizers
+  - tlsroutes/finalizers
+  - udproutes/finalizers
+  verbs:
   - update
 - apiGroups:
   - networking.k8s.io
@@ -127,20 +219,3 @@ rules:
   - get
   - list
   - watch
-- apiGroups:
-  - networking.k8s.io
-  resources:
-  - ingresses
-  verbs:
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - networking.k8s.io
-  resources:
-  - ingresses/status
-  verbs:
-  - patch
-  - update

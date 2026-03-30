@@ -4,7 +4,7 @@ import (
 	"context"
 	"os"
 
-	awssdk "github.com/aws/aws-sdk-go/aws"
+	awssdk "github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/aws/services"
@@ -39,7 +39,22 @@ func (s *listenerSynthesizer) Synthesize(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-
+	// This never happens for Ingress and Service controller as their managed LBs have
+	// atleast one default listener unlike Gateway controller's managed LBs
+	if len(resLSsByLBARN) == 0 {
+		var resLBs []*elbv2model.LoadBalancer
+		s.stack.ListResources(&resLBs)
+		for _, resLB := range resLBs {
+			lbARN, err := resLB.LoadBalancerARN().Resolve(ctx)
+			if err != nil {
+				return err
+			}
+			if err := s.synthesizeListenersOnLB(ctx, lbARN, nil); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	for lbARN, resLSs := range resLSsByLBARN {
 		if err := s.synthesizeListenersOnLB(ctx, lbARN, resLSs); err != nil {
 			return err
@@ -107,8 +122,8 @@ func matchResAndSDKListeners(resLSs []*elbv2model.Listener, sdkLSs []ListenerWit
 
 	resLSByPort := mapResListenerByPort(resLSs)
 	sdkLSByPort := mapSDKListenerByPort(sdkLSs)
-	resLSPorts := sets.Int64KeySet(resLSByPort)
-	sdkLSPorts := sets.Int64KeySet(sdkLSByPort)
+	resLSPorts := sets.Int32KeySet(resLSByPort)
+	sdkLSPorts := sets.Int32KeySet(sdkLSByPort)
 	for _, port := range resLSPorts.Intersection(sdkLSPorts).List() {
 		resLS := resLSByPort[port]
 		sdkLS := sdkLSByPort[port]
@@ -126,18 +141,18 @@ func matchResAndSDKListeners(resLSs []*elbv2model.Listener, sdkLSs []ListenerWit
 	return matchedResAndSDKLSs, unmatchedResLSs, unmatchedSDKLSs
 }
 
-func mapResListenerByPort(resLSs []*elbv2model.Listener) map[int64]*elbv2model.Listener {
-	resLSByPort := make(map[int64]*elbv2model.Listener, len(resLSs))
+func mapResListenerByPort(resLSs []*elbv2model.Listener) map[int32]*elbv2model.Listener {
+	resLSByPort := make(map[int32]*elbv2model.Listener, len(resLSs))
 	for _, ls := range resLSs {
 		resLSByPort[ls.Spec.Port] = ls
 	}
 	return resLSByPort
 }
 
-func mapSDKListenerByPort(sdkLSs []ListenerWithTags) map[int64]ListenerWithTags {
-	sdkLSByPort := make(map[int64]ListenerWithTags, len(sdkLSs))
+func mapSDKListenerByPort(sdkLSs []ListenerWithTags) map[int32]ListenerWithTags {
+	sdkLSByPort := make(map[int32]ListenerWithTags, len(sdkLSs))
 	for _, ls := range sdkLSs {
-		sdkLSByPort[awssdk.Int64Value(ls.Listener.Port)] = ls
+		sdkLSByPort[awssdk.ToInt32(ls.Listener.Port)] = ls
 	}
 	return sdkLSByPort
 }

@@ -2,15 +2,19 @@ package elbv2
 
 import (
 	"context"
+	elbv2types "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2/types"
+	"k8s.io/apimachinery/pkg/util/cache"
 	"testing"
 
-	awssdk "github.com/aws/aws-sdk-go/aws"
-	elbv2sdk "github.com/aws/aws-sdk-go/service/elbv2"
+	awssdk "github.com/aws/aws-sdk-go-v2/aws"
+	elbv2sdk "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2"
 	"github.com/go-logr/logr"
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/aws/services"
+	"sigs.k8s.io/aws-load-balancer-controller/pkg/config"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/deploy/tracking"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 func Test_defaultTaggingManager_ReconcileTags(t *testing.T) {
@@ -52,13 +56,13 @@ func Test_defaultTaggingManager_ReconcileTags(t *testing.T) {
 				describeTagsWithContextCalls: []describeTagsWithContextCall{
 					{
 						req: &elbv2sdk.DescribeTagsInput{
-							ResourceArns: []*string{awssdk.String("my-arn")},
+							ResourceArns: []string{"my-arn"},
 						},
 						resp: &elbv2sdk.DescribeTagsOutput{
-							TagDescriptions: []*elbv2sdk.TagDescription{
+							TagDescriptions: []elbv2types.TagDescription{
 								{
 									ResourceArn: awssdk.String("my-arn"),
-									Tags: []*elbv2sdk.Tag{
+									Tags: []elbv2types.Tag{
 										{
 											Key:   awssdk.String("keyA"),
 											Value: awssdk.String("valueA"),
@@ -80,8 +84,8 @@ func Test_defaultTaggingManager_ReconcileTags(t *testing.T) {
 				addTagsWithContextCalls: []addTagsWithContextCall{
 					{
 						req: &elbv2sdk.AddTagsInput{
-							ResourceArns: []*string{awssdk.String("my-arn")},
-							Tags: []*elbv2sdk.Tag{
+							ResourceArns: []string{"my-arn"},
+							Tags: []elbv2types.Tag{
 								{
 									Key:   awssdk.String("keyB"),
 									Value: awssdk.String("valueB2"),
@@ -97,8 +101,8 @@ func Test_defaultTaggingManager_ReconcileTags(t *testing.T) {
 				removeTagsWithContextCalls: []removeTagsWithContextCall{
 					{
 						req: &elbv2sdk.RemoveTagsInput{
-							ResourceArns: []*string{awssdk.String("my-arn")},
-							TagKeys:      []*string{awssdk.String("keyC")},
+							ResourceArns: []string{"my-arn"},
+							TagKeys:      []string{"keyC"},
 						},
 					},
 				},
@@ -120,8 +124,8 @@ func Test_defaultTaggingManager_ReconcileTags(t *testing.T) {
 				addTagsWithContextCalls: []addTagsWithContextCall{
 					{
 						req: &elbv2sdk.AddTagsInput{
-							ResourceArns: []*string{awssdk.String("my-arn")},
-							Tags: []*elbv2sdk.Tag{
+							ResourceArns: []string{"my-arn"},
+							Tags: []elbv2types.Tag{
 								{
 									Key:   awssdk.String("keyB"),
 									Value: awssdk.String("valueB2"),
@@ -137,8 +141,8 @@ func Test_defaultTaggingManager_ReconcileTags(t *testing.T) {
 				removeTagsWithContextCalls: []removeTagsWithContextCall{
 					{
 						req: &elbv2sdk.RemoveTagsInput{
-							ResourceArns: []*string{awssdk.String("my-arn")},
-							TagKeys:      []*string{awssdk.String("keyC")},
+							ResourceArns: []string{"my-arn"},
+							TagKeys:      []string{"keyC"},
 						},
 					},
 				},
@@ -166,8 +170,8 @@ func Test_defaultTaggingManager_ReconcileTags(t *testing.T) {
 				addTagsWithContextCalls: []addTagsWithContextCall{
 					{
 						req: &elbv2sdk.AddTagsInput{
-							ResourceArns: []*string{awssdk.String("my-arn")},
-							Tags: []*elbv2sdk.Tag{
+							ResourceArns: []string{"my-arn"},
+							Tags: []elbv2types.Tag{
 								{
 									Key:   awssdk.String("keyC"),
 									Value: awssdk.String("valueC2"),
@@ -183,8 +187,8 @@ func Test_defaultTaggingManager_ReconcileTags(t *testing.T) {
 				removeTagsWithContextCalls: []removeTagsWithContextCall{
 					{
 						req: &elbv2sdk.RemoveTagsInput{
-							ResourceArns: []*string{awssdk.String("my-arn")},
-							TagKeys:      []*string{awssdk.String("keyF")},
+							ResourceArns: []string{"my-arn"},
+							TagKeys:      []string{"keyF"},
 						},
 					},
 				},
@@ -215,6 +219,7 @@ func Test_defaultTaggingManager_ReconcileTags(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			defer ctrl.Finish()
 			elbv2Client := services.NewMockELBV2(ctrl)
+			featureGates := config.NewFeatureGates()
 			for _, call := range tt.fields.describeTagsWithContextCalls {
 				elbv2Client.EXPECT().DescribeTagsWithContext(gomock.Any(), call.req).Return(call.resp, call.err)
 			}
@@ -228,8 +233,11 @@ func Test_defaultTaggingManager_ReconcileTags(t *testing.T) {
 			m := &defaultTaggingManager{
 				elbv2Client:           elbv2Client,
 				vpcID:                 "vpc-xxxxxxx",
-				logger:                logr.Discard(),
+				logger:                logr.New(&log.NullLogSink{}),
 				describeTagsChunkSize: defaultDescribeTagsChunkSize,
+				resourceTagsCache:     cache.NewExpiring(),
+				resourceTagsCacheTTL:  defaultResourceTagsCacheTTL,
+				featureGates:          featureGates,
 			}
 			err := m.ReconcileTags(context.Background(), tt.args.arn, tt.args.desiredTags, tt.args.opts...)
 			if tt.wantErr != nil {
@@ -244,7 +252,7 @@ func Test_defaultTaggingManager_ReconcileTags(t *testing.T) {
 func Test_defaultTaggingManager_ListLoadBalancers(t *testing.T) {
 	type describeLoadBalancersAsListCall struct {
 		req  *elbv2sdk.DescribeLoadBalancersInput
-		resp []*elbv2sdk.LoadBalancer
+		resp []elbv2types.LoadBalancer
 		err  error
 	}
 	type describeTagsWithContextCall struct {
@@ -272,7 +280,7 @@ func Test_defaultTaggingManager_ListLoadBalancers(t *testing.T) {
 				describeLoadBalancersAsListCalls: []describeLoadBalancersAsListCall{
 					{
 						req: &elbv2sdk.DescribeLoadBalancersInput{},
-						resp: []*elbv2sdk.LoadBalancer{
+						resp: []elbv2types.LoadBalancer{
 							{
 								LoadBalancerArn: awssdk.String("lb-1"),
 								VpcId:           awssdk.String("vpc-xxxxxxx"),
@@ -291,13 +299,13 @@ func Test_defaultTaggingManager_ListLoadBalancers(t *testing.T) {
 				describeTagsWithContextCalls: []describeTagsWithContextCall{
 					{
 						req: &elbv2sdk.DescribeTagsInput{
-							ResourceArns: awssdk.StringSlice([]string{"lb-1", "lb-2", "lb-3"}),
+							ResourceArns: []string{"lb-1", "lb-2", "lb-3"},
 						},
 						resp: &elbv2sdk.DescribeTagsOutput{
-							TagDescriptions: []*elbv2sdk.TagDescription{
+							TagDescriptions: []elbv2types.TagDescription{
 								{
 									ResourceArn: awssdk.String("lb-1"),
-									Tags: []*elbv2sdk.Tag{
+									Tags: []elbv2types.Tag{
 										{
 											Key:   awssdk.String("keyA"),
 											Value: awssdk.String("valueA1"),
@@ -310,7 +318,7 @@ func Test_defaultTaggingManager_ListLoadBalancers(t *testing.T) {
 								},
 								{
 									ResourceArn: awssdk.String("lb-2"),
-									Tags: []*elbv2sdk.Tag{
+									Tags: []elbv2types.Tag{
 										{
 											Key:   awssdk.String("keyA"),
 											Value: awssdk.String("valueA2"),
@@ -323,7 +331,7 @@ func Test_defaultTaggingManager_ListLoadBalancers(t *testing.T) {
 								},
 								{
 									ResourceArn: awssdk.String("lb-3"),
-									Tags: []*elbv2sdk.Tag{
+									Tags: []elbv2types.Tag{
 										{
 											Key:   awssdk.String("keyA"),
 											Value: awssdk.String("valueA3"),
@@ -348,14 +356,14 @@ func Test_defaultTaggingManager_ListLoadBalancers(t *testing.T) {
 			},
 			want: []LoadBalancerWithTags{
 				{
-					LoadBalancer: &elbv2sdk.LoadBalancer{LoadBalancerArn: awssdk.String("lb-1"), VpcId: awssdk.String("vpc-xxxxxxx")},
+					LoadBalancer: &elbv2types.LoadBalancer{LoadBalancerArn: awssdk.String("lb-1"), VpcId: awssdk.String("vpc-xxxxxxx")},
 					Tags: map[string]string{
 						"keyA": "valueA1",
 						"keyB": "valueB1",
 					},
 				},
 				{
-					LoadBalancer: &elbv2sdk.LoadBalancer{LoadBalancerArn: awssdk.String("lb-3"), VpcId: awssdk.String("vpc-xxxxxxx")},
+					LoadBalancer: &elbv2types.LoadBalancer{LoadBalancerArn: awssdk.String("lb-3"), VpcId: awssdk.String("vpc-xxxxxxx")},
 					Tags: map[string]string{
 						"keyA": "valueA3",
 						"keyB": "valueB3",
@@ -369,7 +377,7 @@ func Test_defaultTaggingManager_ListLoadBalancers(t *testing.T) {
 				describeLoadBalancersAsListCalls: []describeLoadBalancersAsListCall{
 					{
 						req: &elbv2sdk.DescribeLoadBalancersInput{},
-						resp: []*elbv2sdk.LoadBalancer{
+						resp: []elbv2types.LoadBalancer{
 							{
 								LoadBalancerArn: awssdk.String("lb-1"),
 								VpcId:           awssdk.String("vpc-xxxxxxx"),
@@ -388,13 +396,13 @@ func Test_defaultTaggingManager_ListLoadBalancers(t *testing.T) {
 				describeTagsWithContextCalls: []describeTagsWithContextCall{
 					{
 						req: &elbv2sdk.DescribeTagsInput{
-							ResourceArns: awssdk.StringSlice([]string{"lb-1", "lb-2"}),
+							ResourceArns: []string{"lb-1", "lb-2"},
 						},
 						resp: &elbv2sdk.DescribeTagsOutput{
-							TagDescriptions: []*elbv2sdk.TagDescription{
+							TagDescriptions: []elbv2types.TagDescription{
 								{
 									ResourceArn: awssdk.String("lb-1"),
-									Tags: []*elbv2sdk.Tag{
+									Tags: []elbv2types.Tag{
 										{
 											Key:   awssdk.String("keyA"),
 											Value: awssdk.String("valueA1"),
@@ -407,7 +415,7 @@ func Test_defaultTaggingManager_ListLoadBalancers(t *testing.T) {
 								},
 								{
 									ResourceArn: awssdk.String("lb-2"),
-									Tags: []*elbv2sdk.Tag{
+									Tags: []elbv2types.Tag{
 										{
 											Key:   awssdk.String("keyA"),
 											Value: awssdk.String("valueA2"),
@@ -432,7 +440,7 @@ func Test_defaultTaggingManager_ListLoadBalancers(t *testing.T) {
 			},
 			want: []LoadBalancerWithTags{
 				{
-					LoadBalancer: &elbv2sdk.LoadBalancer{LoadBalancerArn: awssdk.String("lb-1"), VpcId: awssdk.String("vpc-xxxxxxx")},
+					LoadBalancer: &elbv2types.LoadBalancer{LoadBalancerArn: awssdk.String("lb-1"), VpcId: awssdk.String("vpc-xxxxxxx")},
 					Tags: map[string]string{
 						"keyA": "valueA1",
 						"keyB": "valueB1",
@@ -446,7 +454,7 @@ func Test_defaultTaggingManager_ListLoadBalancers(t *testing.T) {
 				describeLoadBalancersAsListCalls: []describeLoadBalancersAsListCall{
 					{
 						req: &elbv2sdk.DescribeLoadBalancersInput{},
-						resp: []*elbv2sdk.LoadBalancer{
+						resp: []elbv2types.LoadBalancer{
 							{
 								LoadBalancerArn: awssdk.String("lb-1"),
 								VpcId:           awssdk.String("vpc-xxxxxxx"),
@@ -465,13 +473,13 @@ func Test_defaultTaggingManager_ListLoadBalancers(t *testing.T) {
 				describeTagsWithContextCalls: []describeTagsWithContextCall{
 					{
 						req: &elbv2sdk.DescribeTagsInput{
-							ResourceArns: awssdk.StringSlice([]string{"lb-1"}),
+							ResourceArns: []string{"lb-1"},
 						},
 						resp: &elbv2sdk.DescribeTagsOutput{
-							TagDescriptions: []*elbv2sdk.TagDescription{
+							TagDescriptions: []elbv2types.TagDescription{
 								{
 									ResourceArn: awssdk.String("lb-1"),
-									Tags: []*elbv2sdk.Tag{
+									Tags: []elbv2types.Tag{
 										{
 											Key:   awssdk.String("keyA"),
 											Value: awssdk.String("valueA1"),
@@ -496,7 +504,7 @@ func Test_defaultTaggingManager_ListLoadBalancers(t *testing.T) {
 			},
 			want: []LoadBalancerWithTags{
 				{
-					LoadBalancer: &elbv2sdk.LoadBalancer{LoadBalancerArn: awssdk.String("lb-1"), VpcId: awssdk.String("vpc-xxxxxxx")},
+					LoadBalancer: &elbv2types.LoadBalancer{LoadBalancerArn: awssdk.String("lb-1"), VpcId: awssdk.String("vpc-xxxxxxx")},
 					Tags: map[string]string{
 						"keyA": "valueA1",
 						"keyB": "valueB1",
@@ -510,7 +518,7 @@ func Test_defaultTaggingManager_ListLoadBalancers(t *testing.T) {
 				describeLoadBalancersAsListCalls: []describeLoadBalancersAsListCall{
 					{
 						req: &elbv2sdk.DescribeLoadBalancersInput{},
-						resp: []*elbv2sdk.LoadBalancer{
+						resp: []elbv2types.LoadBalancer{
 							{
 								LoadBalancerArn: awssdk.String("lb-1"),
 								VpcId:           awssdk.String("vpc-xxxxxxx"),
@@ -529,13 +537,13 @@ func Test_defaultTaggingManager_ListLoadBalancers(t *testing.T) {
 				describeTagsWithContextCalls: []describeTagsWithContextCall{
 					{
 						req: &elbv2sdk.DescribeTagsInput{
-							ResourceArns: awssdk.StringSlice([]string{"lb-1", "lb-2", "lb-3"}),
+							ResourceArns: []string{"lb-1", "lb-2", "lb-3"},
 						},
 						resp: &elbv2sdk.DescribeTagsOutput{
-							TagDescriptions: []*elbv2sdk.TagDescription{
+							TagDescriptions: []elbv2types.TagDescription{
 								{
 									ResourceArn: awssdk.String("lb-1"),
-									Tags: []*elbv2sdk.Tag{
+									Tags: []elbv2types.Tag{
 										{
 											Key:   awssdk.String("keyA"),
 											Value: awssdk.String("valueA1"),
@@ -548,7 +556,7 @@ func Test_defaultTaggingManager_ListLoadBalancers(t *testing.T) {
 								},
 								{
 									ResourceArn: awssdk.String("lb-2"),
-									Tags: []*elbv2sdk.Tag{
+									Tags: []elbv2types.Tag{
 										{
 											Key:   awssdk.String("keyA"),
 											Value: awssdk.String("valueA2"),
@@ -561,7 +569,7 @@ func Test_defaultTaggingManager_ListLoadBalancers(t *testing.T) {
 								},
 								{
 									ResourceArn: awssdk.String("lb-3"),
-									Tags: []*elbv2sdk.Tag{
+									Tags: []elbv2types.Tag{
 										{
 											Key:   awssdk.String("keyA"),
 											Value: awssdk.String("valueA3"),
@@ -592,6 +600,7 @@ func Test_defaultTaggingManager_ListLoadBalancers(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			defer ctrl.Finish()
 			elbv2Client := services.NewMockELBV2(ctrl)
+			featureGates := config.NewFeatureGates()
 			for _, call := range tt.fields.describeLoadBalancersAsListCalls {
 				elbv2Client.EXPECT().DescribeLoadBalancersAsList(gomock.Any(), call.req).Return(call.resp, call.err)
 			}
@@ -603,6 +612,9 @@ func Test_defaultTaggingManager_ListLoadBalancers(t *testing.T) {
 				elbv2Client:           elbv2Client,
 				vpcID:                 "vpc-xxxxxxx",
 				describeTagsChunkSize: defaultDescribeTagsChunkSize,
+				resourceTagsCache:     cache.NewExpiring(),
+				resourceTagsCacheTTL:  defaultResourceTagsCacheTTL,
+				featureGates:          featureGates,
 			}
 			got, err := m.ListLoadBalancers(context.Background(), tt.args.tagFilters...)
 			if tt.wantErr != nil {
@@ -618,7 +630,7 @@ func Test_defaultTaggingManager_ListLoadBalancers(t *testing.T) {
 func Test_defaultTaggingManager_ListTargetGroups(t *testing.T) {
 	type describeTargetGroupsAsListCall struct {
 		req  *elbv2sdk.DescribeTargetGroupsInput
-		resp []*elbv2sdk.TargetGroup
+		resp []elbv2types.TargetGroup
 		err  error
 	}
 	type describeTagsWithContextCall struct {
@@ -646,7 +658,7 @@ func Test_defaultTaggingManager_ListTargetGroups(t *testing.T) {
 				describeTargetGroupsAsListCalls: []describeTargetGroupsAsListCall{
 					{
 						req: &elbv2sdk.DescribeTargetGroupsInput{},
-						resp: []*elbv2sdk.TargetGroup{
+						resp: []elbv2types.TargetGroup{
 							{
 								TargetGroupArn: awssdk.String("tg-1"),
 								VpcId:          awssdk.String("vpc-xxxxxxx"),
@@ -665,13 +677,13 @@ func Test_defaultTaggingManager_ListTargetGroups(t *testing.T) {
 				describeTagsWithContextCalls: []describeTagsWithContextCall{
 					{
 						req: &elbv2sdk.DescribeTagsInput{
-							ResourceArns: awssdk.StringSlice([]string{"tg-1", "tg-2", "tg-3"}),
+							ResourceArns: []string{"tg-1", "tg-2", "tg-3"},
 						},
 						resp: &elbv2sdk.DescribeTagsOutput{
-							TagDescriptions: []*elbv2sdk.TagDescription{
+							TagDescriptions: []elbv2types.TagDescription{
 								{
 									ResourceArn: awssdk.String("tg-1"),
-									Tags: []*elbv2sdk.Tag{
+									Tags: []elbv2types.Tag{
 										{
 											Key:   awssdk.String("keyA"),
 											Value: awssdk.String("valueA1"),
@@ -684,7 +696,7 @@ func Test_defaultTaggingManager_ListTargetGroups(t *testing.T) {
 								},
 								{
 									ResourceArn: awssdk.String("tg-2"),
-									Tags: []*elbv2sdk.Tag{
+									Tags: []elbv2types.Tag{
 										{
 											Key:   awssdk.String("keyA"),
 											Value: awssdk.String("valueA2"),
@@ -697,7 +709,7 @@ func Test_defaultTaggingManager_ListTargetGroups(t *testing.T) {
 								},
 								{
 									ResourceArn: awssdk.String("tg-3"),
-									Tags: []*elbv2sdk.Tag{
+									Tags: []elbv2types.Tag{
 										{
 											Key:   awssdk.String("keyA"),
 											Value: awssdk.String("valueA3"),
@@ -722,14 +734,14 @@ func Test_defaultTaggingManager_ListTargetGroups(t *testing.T) {
 			},
 			want: []TargetGroupWithTags{
 				{
-					TargetGroup: &elbv2sdk.TargetGroup{TargetGroupArn: awssdk.String("tg-1"), VpcId: awssdk.String("vpc-xxxxxxx")},
+					TargetGroup: &elbv2types.TargetGroup{TargetGroupArn: awssdk.String("tg-1"), VpcId: awssdk.String("vpc-xxxxxxx")},
 					Tags: map[string]string{
 						"keyA": "valueA1",
 						"keyB": "valueB1",
 					},
 				},
 				{
-					TargetGroup: &elbv2sdk.TargetGroup{TargetGroupArn: awssdk.String("tg-3"), VpcId: awssdk.String("vpc-xxxxxxx")},
+					TargetGroup: &elbv2types.TargetGroup{TargetGroupArn: awssdk.String("tg-3"), VpcId: awssdk.String("vpc-xxxxxxx")},
 					Tags: map[string]string{
 						"keyA": "valueA3",
 						"keyB": "valueB3",
@@ -743,7 +755,7 @@ func Test_defaultTaggingManager_ListTargetGroups(t *testing.T) {
 				describeTargetGroupsAsListCalls: []describeTargetGroupsAsListCall{
 					{
 						req: &elbv2sdk.DescribeTargetGroupsInput{},
-						resp: []*elbv2sdk.TargetGroup{
+						resp: []elbv2types.TargetGroup{
 							{
 								TargetGroupArn: awssdk.String("tg-1"),
 								VpcId:          awssdk.String("vpc-yyyyyyy"),
@@ -762,13 +774,13 @@ func Test_defaultTaggingManager_ListTargetGroups(t *testing.T) {
 				describeTagsWithContextCalls: []describeTagsWithContextCall{
 					{
 						req: &elbv2sdk.DescribeTagsInput{
-							ResourceArns: awssdk.StringSlice([]string{"tg-2", "tg-3"}),
+							ResourceArns: []string{"tg-2", "tg-3"},
 						},
 						resp: &elbv2sdk.DescribeTagsOutput{
-							TagDescriptions: []*elbv2sdk.TagDescription{
+							TagDescriptions: []elbv2types.TagDescription{
 								{
 									ResourceArn: awssdk.String("tg-2"),
-									Tags: []*elbv2sdk.Tag{
+									Tags: []elbv2types.Tag{
 										{
 											Key:   awssdk.String("keyA"),
 											Value: awssdk.String("valueA2"),
@@ -781,7 +793,7 @@ func Test_defaultTaggingManager_ListTargetGroups(t *testing.T) {
 								},
 								{
 									ResourceArn: awssdk.String("tg-3"),
-									Tags: []*elbv2sdk.Tag{
+									Tags: []elbv2types.Tag{
 										{
 											Key:   awssdk.String("keyA"),
 											Value: awssdk.String("valueA3"),
@@ -806,7 +818,7 @@ func Test_defaultTaggingManager_ListTargetGroups(t *testing.T) {
 			},
 			want: []TargetGroupWithTags{
 				{
-					TargetGroup: &elbv2sdk.TargetGroup{TargetGroupArn: awssdk.String("tg-3"), VpcId: awssdk.String("vpc-xxxxxxx")},
+					TargetGroup: &elbv2types.TargetGroup{TargetGroupArn: awssdk.String("tg-3"), VpcId: awssdk.String("vpc-xxxxxxx")},
 					Tags: map[string]string{
 						"keyA": "valueA3",
 						"keyB": "valueB3",
@@ -820,7 +832,7 @@ func Test_defaultTaggingManager_ListTargetGroups(t *testing.T) {
 				describeTargetGroupsAsListCalls: []describeTargetGroupsAsListCall{
 					{
 						req: &elbv2sdk.DescribeTargetGroupsInput{},
-						resp: []*elbv2sdk.TargetGroup{
+						resp: []elbv2types.TargetGroup{
 							{
 								TargetGroupArn: awssdk.String("tg-1"),
 								VpcId:          awssdk.String("vpc-yyyyyyy"),
@@ -839,13 +851,13 @@ func Test_defaultTaggingManager_ListTargetGroups(t *testing.T) {
 				describeTagsWithContextCalls: []describeTagsWithContextCall{
 					{
 						req: &elbv2sdk.DescribeTagsInput{
-							ResourceArns: awssdk.StringSlice([]string{"tg-3"}),
+							ResourceArns: []string{"tg-3"},
 						},
 						resp: &elbv2sdk.DescribeTagsOutput{
-							TagDescriptions: []*elbv2sdk.TagDescription{
+							TagDescriptions: []elbv2types.TagDescription{
 								{
 									ResourceArn: awssdk.String("tg-3"),
-									Tags: []*elbv2sdk.Tag{
+									Tags: []elbv2types.Tag{
 										{
 											Key:   awssdk.String("keyA"),
 											Value: awssdk.String("valueA3"),
@@ -870,7 +882,7 @@ func Test_defaultTaggingManager_ListTargetGroups(t *testing.T) {
 			},
 			want: []TargetGroupWithTags{
 				{
-					TargetGroup: &elbv2sdk.TargetGroup{TargetGroupArn: awssdk.String("tg-3"), VpcId: awssdk.String("vpc-xxxxxxx")},
+					TargetGroup: &elbv2types.TargetGroup{TargetGroupArn: awssdk.String("tg-3"), VpcId: awssdk.String("vpc-xxxxxxx")},
 					Tags: map[string]string{
 						"keyA": "valueA3",
 						"keyB": "valueB3",
@@ -884,7 +896,7 @@ func Test_defaultTaggingManager_ListTargetGroups(t *testing.T) {
 				describeTargetGroupsAsListCalls: []describeTargetGroupsAsListCall{
 					{
 						req: &elbv2sdk.DescribeTargetGroupsInput{},
-						resp: []*elbv2sdk.TargetGroup{
+						resp: []elbv2types.TargetGroup{
 							{
 								TargetGroupArn: awssdk.String("tg-1"),
 								VpcId:          awssdk.String("vpc-xxxxxxx"),
@@ -903,13 +915,13 @@ func Test_defaultTaggingManager_ListTargetGroups(t *testing.T) {
 				describeTagsWithContextCalls: []describeTagsWithContextCall{
 					{
 						req: &elbv2sdk.DescribeTagsInput{
-							ResourceArns: awssdk.StringSlice([]string{"tg-1", "tg-2", "tg-3"}),
+							ResourceArns: []string{"tg-1", "tg-2", "tg-3"},
 						},
 						resp: &elbv2sdk.DescribeTagsOutput{
-							TagDescriptions: []*elbv2sdk.TagDescription{
+							TagDescriptions: []elbv2types.TagDescription{
 								{
 									ResourceArn: awssdk.String("tg-1"),
-									Tags: []*elbv2sdk.Tag{
+									Tags: []elbv2types.Tag{
 										{
 											Key:   awssdk.String("keyA"),
 											Value: awssdk.String("valueA1"),
@@ -922,7 +934,7 @@ func Test_defaultTaggingManager_ListTargetGroups(t *testing.T) {
 								},
 								{
 									ResourceArn: awssdk.String("tg-2"),
-									Tags: []*elbv2sdk.Tag{
+									Tags: []elbv2types.Tag{
 										{
 											Key:   awssdk.String("keyA"),
 											Value: awssdk.String("valueA2"),
@@ -935,7 +947,7 @@ func Test_defaultTaggingManager_ListTargetGroups(t *testing.T) {
 								},
 								{
 									ResourceArn: awssdk.String("tg-3"),
-									Tags: []*elbv2sdk.Tag{
+									Tags: []elbv2types.Tag{
 										{
 											Key:   awssdk.String("keyA"),
 											Value: awssdk.String("valueA3"),
@@ -966,7 +978,7 @@ func Test_defaultTaggingManager_ListTargetGroups(t *testing.T) {
 				describeTargetGroupsAsListCalls: []describeTargetGroupsAsListCall{
 					{
 						req: &elbv2sdk.DescribeTargetGroupsInput{},
-						resp: []*elbv2sdk.TargetGroup{
+						resp: []elbv2types.TargetGroup{
 							{
 								TargetGroupArn: awssdk.String("tg-1"),
 								VpcId:          awssdk.String("vpc-xxxxxxx"),
@@ -989,13 +1001,13 @@ func Test_defaultTaggingManager_ListTargetGroups(t *testing.T) {
 				describeTagsWithContextCalls: []describeTagsWithContextCall{
 					{
 						req: &elbv2sdk.DescribeTagsInput{
-							ResourceArns: awssdk.StringSlice([]string{"tg-1", "tg-2", "tg-3", "tg-4"}),
+							ResourceArns: []string{"tg-1", "tg-2", "tg-3", "tg-4"},
 						},
 						resp: &elbv2sdk.DescribeTagsOutput{
-							TagDescriptions: []*elbv2sdk.TagDescription{
+							TagDescriptions: []elbv2types.TagDescription{
 								{
 									ResourceArn: awssdk.String("tg-1"),
-									Tags: []*elbv2sdk.Tag{
+									Tags: []elbv2types.Tag{
 										{
 											Key:   awssdk.String("keyA"),
 											Value: awssdk.String("valueA1"),
@@ -1008,7 +1020,7 @@ func Test_defaultTaggingManager_ListTargetGroups(t *testing.T) {
 								},
 								{
 									ResourceArn: awssdk.String("tg-2"),
-									Tags: []*elbv2sdk.Tag{
+									Tags: []elbv2types.Tag{
 										{
 											Key:   awssdk.String("keyA"),
 											Value: awssdk.String("valueA2"),
@@ -1021,7 +1033,7 @@ func Test_defaultTaggingManager_ListTargetGroups(t *testing.T) {
 								},
 								{
 									ResourceArn: awssdk.String("tg-3"),
-									Tags: []*elbv2sdk.Tag{
+									Tags: []elbv2types.Tag{
 										{
 											Key:   awssdk.String("keyA"),
 											Value: awssdk.String("valueA3"),
@@ -1034,7 +1046,7 @@ func Test_defaultTaggingManager_ListTargetGroups(t *testing.T) {
 								},
 								{
 									ResourceArn: awssdk.String("tg-4"),
-									Tags: []*elbv2sdk.Tag{
+									Tags: []elbv2types.Tag{
 										{
 											Key:   awssdk.String("keyA"),
 											Value: awssdk.String("valueA4"),
@@ -1062,21 +1074,21 @@ func Test_defaultTaggingManager_ListTargetGroups(t *testing.T) {
 			},
 			want: []TargetGroupWithTags{
 				{
-					TargetGroup: &elbv2sdk.TargetGroup{TargetGroupArn: awssdk.String("tg-1"), VpcId: awssdk.String("vpc-xxxxxxx")},
+					TargetGroup: &elbv2types.TargetGroup{TargetGroupArn: awssdk.String("tg-1"), VpcId: awssdk.String("vpc-xxxxxxx")},
 					Tags: map[string]string{
 						"keyA": "valueA1",
 						"keyB": "valueB1",
 					},
 				},
 				{
-					TargetGroup: &elbv2sdk.TargetGroup{TargetGroupArn: awssdk.String("tg-2"), VpcId: awssdk.String("vpc-xxxxxxx")},
+					TargetGroup: &elbv2types.TargetGroup{TargetGroupArn: awssdk.String("tg-2"), VpcId: awssdk.String("vpc-xxxxxxx")},
 					Tags: map[string]string{
 						"keyA": "valueA2",
 						"keyB": "valueB2",
 					},
 				},
 				{
-					TargetGroup: &elbv2sdk.TargetGroup{TargetGroupArn: awssdk.String("tg-4"), VpcId: awssdk.String("vpc-xxxxxxx")},
+					TargetGroup: &elbv2types.TargetGroup{TargetGroupArn: awssdk.String("tg-4"), VpcId: awssdk.String("vpc-xxxxxxx")},
 					Tags: map[string]string{
 						"keyA": "valueA4",
 						"keyB": "valueB4",
@@ -1090,6 +1102,7 @@ func Test_defaultTaggingManager_ListTargetGroups(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			defer ctrl.Finish()
 			elbv2Client := services.NewMockELBV2(ctrl)
+			featureGates := config.NewFeatureGates()
 			for _, call := range tt.fields.describeTargetGroupsAsListCalls {
 				elbv2Client.EXPECT().DescribeTargetGroupsAsList(gomock.Any(), call.req).Return(call.resp, call.err)
 			}
@@ -1101,6 +1114,9 @@ func Test_defaultTaggingManager_ListTargetGroups(t *testing.T) {
 				elbv2Client:           elbv2Client,
 				vpcID:                 "vpc-xxxxxxx",
 				describeTagsChunkSize: defaultDescribeTagsChunkSize,
+				resourceTagsCache:     cache.NewExpiring(),
+				resourceTagsCacheTTL:  defaultResourceTagsCacheTTL,
+				featureGates:          featureGates,
 			}
 			got, err := m.ListTargetGroups(context.Background(), tt.args.tagFilters...)
 			if tt.wantErr != nil {
@@ -1114,6 +1130,223 @@ func Test_defaultTaggingManager_ListTargetGroups(t *testing.T) {
 }
 
 func Test_defaultTaggingManager_describeResourceTags(t *testing.T) {
+	type describeTagsWithContextCall struct {
+		req  *elbv2sdk.DescribeTagsInput
+		resp *elbv2sdk.DescribeTagsOutput
+		err  error
+	}
+	type fields struct {
+		resourceTagsCacheItems       map[string]map[string]string
+		describeTagsWithContextCalls []describeTagsWithContextCall
+	}
+	type args struct {
+		arns []string
+	}
+	tests := []struct {
+		name    string
+		fields  fields
+		args    args
+		want    map[string]map[string]string
+		wantErr error
+	}{
+		{
+			name: "cache miss for all items",
+			fields: fields{
+				describeTagsWithContextCalls: []describeTagsWithContextCall{
+					{
+						req: &elbv2sdk.DescribeTagsInput{
+							ResourceArns: []string{"arn-1", "arn-2", "arn-3"},
+						},
+						resp: &elbv2sdk.DescribeTagsOutput{
+							TagDescriptions: []elbv2types.TagDescription{
+								{
+									ResourceArn: awssdk.String("arn-1"),
+									Tags: []elbv2types.Tag{
+										{
+											Key:   awssdk.String("keyA"),
+											Value: awssdk.String("valueA1"),
+										},
+										{
+											Key:   awssdk.String("keyB"),
+											Value: awssdk.String("valueB1"),
+										},
+									},
+								},
+								{
+									ResourceArn: awssdk.String("arn-2"),
+									Tags: []elbv2types.Tag{
+										{
+											Key:   awssdk.String("keyA"),
+											Value: awssdk.String("valueA2"),
+										},
+										{
+											Key:   awssdk.String("keyB"),
+											Value: awssdk.String("valueB2"),
+										},
+									},
+								},
+								{
+									ResourceArn: awssdk.String("arn-3"),
+									Tags: []elbv2types.Tag{
+										{
+											Key:   awssdk.String("keyA"),
+											Value: awssdk.String("valueA3"),
+										},
+										{
+											Key:   awssdk.String("keyB"),
+											Value: awssdk.String("valueB3"),
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			args: args{
+				arns: []string{"arn-1", "arn-2", "arn-3"},
+			},
+			want: map[string]map[string]string{
+				"arn-1": {
+					"keyA": "valueA1",
+					"keyB": "valueB1",
+				},
+				"arn-2": {
+					"keyA": "valueA2",
+					"keyB": "valueB2",
+				},
+				"arn-3": {
+					"keyA": "valueA3",
+					"keyB": "valueB3",
+				},
+			},
+		},
+		{
+			name: "cache hit for all items",
+			fields: fields{
+				resourceTagsCacheItems: map[string]map[string]string{
+					"arn-1": {
+						"keyA": "valueA1",
+						"keyB": "valueB1",
+					},
+					"arn-2": {
+						"keyA": "valueA2",
+						"keyB": "valueB2",
+					},
+					"arn-3": {
+						"keyA": "valueA3",
+						"keyB": "valueB3",
+					},
+				},
+				describeTagsWithContextCalls: []describeTagsWithContextCall{},
+			},
+			args: args{
+				arns: []string{"arn-1", "arn-2", "arn-3"},
+			},
+			want: map[string]map[string]string{
+				"arn-1": {
+					"keyA": "valueA1",
+					"keyB": "valueB1",
+				},
+				"arn-2": {
+					"keyA": "valueA2",
+					"keyB": "valueB2",
+				},
+				"arn-3": {
+					"keyA": "valueA3",
+					"keyB": "valueB3",
+				},
+			},
+		},
+		{
+			name: "cache hit for 2/3 items",
+			fields: fields{
+				resourceTagsCacheItems: map[string]map[string]string{
+					"arn-1": {
+						"keyA": "valueA1",
+						"keyB": "valueB1",
+					},
+					"arn-3": {
+						"keyA": "valueA3",
+						"keyB": "valueB3",
+					},
+				},
+				describeTagsWithContextCalls: []describeTagsWithContextCall{
+					{
+						req: &elbv2sdk.DescribeTagsInput{
+							ResourceArns: []string{"arn-2"},
+						},
+						resp: &elbv2sdk.DescribeTagsOutput{
+							TagDescriptions: []elbv2types.TagDescription{
+								{
+									ResourceArn: awssdk.String("arn-2"),
+									Tags: []elbv2types.Tag{
+										{
+											Key:   awssdk.String("keyA"),
+											Value: awssdk.String("valueA2"),
+										},
+										{
+											Key:   awssdk.String("keyB"),
+											Value: awssdk.String("valueB2"),
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			args: args{
+				arns: []string{"arn-1", "arn-2", "arn-3"},
+			},
+			want: map[string]map[string]string{
+				"arn-1": {
+					"keyA": "valueA1",
+					"keyB": "valueB1",
+				},
+				"arn-2": {
+					"keyA": "valueA2",
+					"keyB": "valueB2",
+				},
+				"arn-3": {
+					"keyA": "valueA3",
+					"keyB": "valueB3",
+				},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+			elbv2Client := services.NewMockELBV2(ctrl)
+			for _, call := range tt.fields.describeTagsWithContextCalls {
+				elbv2Client.EXPECT().DescribeTagsWithContext(gomock.Any(), call.req).Return(call.resp, call.err)
+			}
+
+			m := &defaultTaggingManager{
+				elbv2Client:           elbv2Client,
+				vpcID:                 "vpc-xxxxxxx",
+				describeTagsChunkSize: 20,
+				resourceTagsCache:     cache.NewExpiring(),
+				resourceTagsCacheTTL:  defaultResourceTagsCacheTTL,
+			}
+			for arn, tags := range tt.fields.resourceTagsCacheItems {
+				m.resourceTagsCache.Set(arn, tags, m.resourceTagsCacheTTL)
+			}
+
+			got, err := m.describeResourceTags(context.Background(), tt.args.arns)
+			if tt.wantErr != nil {
+				assert.EqualError(t, err, tt.wantErr.Error())
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, tt.want, got)
+			}
+		})
+	}
+}
+
+func Test_defaultTaggingManager_describeResourceTagsFromAWS(t *testing.T) {
 	type describeTagsWithContextCall struct {
 		req  *elbv2sdk.DescribeTagsInput
 		resp *elbv2sdk.DescribeTagsOutput
@@ -1138,13 +1371,13 @@ func Test_defaultTaggingManager_describeResourceTags(t *testing.T) {
 				describeTagsWithContextCalls: []describeTagsWithContextCall{
 					{
 						req: &elbv2sdk.DescribeTagsInput{
-							ResourceArns: []*string{awssdk.String("my-arn")},
+							ResourceArns: []string{"my-arn"},
 						},
 						resp: &elbv2sdk.DescribeTagsOutput{
-							TagDescriptions: []*elbv2sdk.TagDescription{
+							TagDescriptions: []elbv2types.TagDescription{
 								{
 									ResourceArn: awssdk.String("my-arn"),
-									Tags: []*elbv2sdk.Tag{
+									Tags: []elbv2types.Tag{
 										{
 											Key:   awssdk.String("keyA"),
 											Value: awssdk.String("valueA"),
@@ -1176,13 +1409,13 @@ func Test_defaultTaggingManager_describeResourceTags(t *testing.T) {
 				describeTagsWithContextCalls: []describeTagsWithContextCall{
 					{
 						req: &elbv2sdk.DescribeTagsInput{
-							ResourceArns: []*string{awssdk.String("my-arn1"), awssdk.String("my-arn2")},
+							ResourceArns: []string{"my-arn1", "my-arn2"},
 						},
 						resp: &elbv2sdk.DescribeTagsOutput{
-							TagDescriptions: []*elbv2sdk.TagDescription{
+							TagDescriptions: []elbv2types.TagDescription{
 								{
 									ResourceArn: awssdk.String("my-arn1"),
-									Tags: []*elbv2sdk.Tag{
+									Tags: []elbv2types.Tag{
 										{
 											Key:   awssdk.String("keyA"),
 											Value: awssdk.String("valueA1"),
@@ -1195,7 +1428,7 @@ func Test_defaultTaggingManager_describeResourceTags(t *testing.T) {
 								},
 								{
 									ResourceArn: awssdk.String("my-arn2"),
-									Tags: []*elbv2sdk.Tag{
+									Tags: []elbv2types.Tag{
 										{
 											Key:   awssdk.String("keyA"),
 											Value: awssdk.String("valueA2"),
@@ -1211,13 +1444,13 @@ func Test_defaultTaggingManager_describeResourceTags(t *testing.T) {
 					},
 					{
 						req: &elbv2sdk.DescribeTagsInput{
-							ResourceArns: []*string{awssdk.String("my-arn3")},
+							ResourceArns: []string{"my-arn3"},
 						},
 						resp: &elbv2sdk.DescribeTagsOutput{
-							TagDescriptions: []*elbv2sdk.TagDescription{
+							TagDescriptions: []elbv2types.TagDescription{
 								{
 									ResourceArn: awssdk.String("my-arn3"),
-									Tags: []*elbv2sdk.Tag{
+									Tags: []elbv2types.Tag{
 										{
 											Key:   awssdk.String("keyA"),
 											Value: awssdk.String("valueA3"),
@@ -1265,8 +1498,10 @@ func Test_defaultTaggingManager_describeResourceTags(t *testing.T) {
 				elbv2Client:           elbv2Client,
 				vpcID:                 "vpc-xxxxxxx",
 				describeTagsChunkSize: 2,
+				resourceTagsCache:     cache.NewExpiring(),
+				resourceTagsCacheTTL:  defaultResourceTagsCacheTTL,
 			}
-			got, err := m.describeResourceTags(context.Background(), tt.args.arns)
+			got, err := m.describeResourceTagsFromAWS(context.Background(), tt.args.arns)
 			if tt.wantErr != nil {
 				assert.EqualError(t, err, tt.wantErr.Error())
 			} else {
@@ -1284,7 +1519,7 @@ func Test_convertTagsToSDKTags(t *testing.T) {
 	tests := []struct {
 		name string
 		args args
-		want []*elbv2sdk.Tag
+		want []elbv2types.Tag
 	}{
 		{
 			name: "non-empty case",
@@ -1294,7 +1529,7 @@ func Test_convertTagsToSDKTags(t *testing.T) {
 					"keyB": "valueB",
 				},
 			},
-			want: []*elbv2sdk.Tag{
+			want: []elbv2types.Tag{
 				{
 					Key:   awssdk.String("keyA"),
 					Value: awssdk.String("valueA"),
@@ -1326,7 +1561,7 @@ func Test_convertTagsToSDKTags(t *testing.T) {
 
 func Test_convertSDKTagsToTags(t *testing.T) {
 	type args struct {
-		sdkTags []*elbv2sdk.Tag
+		sdkTags []elbv2types.Tag
 	}
 	tests := []struct {
 		name string
@@ -1336,7 +1571,7 @@ func Test_convertSDKTagsToTags(t *testing.T) {
 		{
 			name: "non-empty case",
 			args: args{
-				sdkTags: []*elbv2sdk.Tag{
+				sdkTags: []elbv2types.Tag{
 					{
 						Key:   awssdk.String("keyA"),
 						Value: awssdk.String("valueA"),
@@ -1362,7 +1597,7 @@ func Test_convertSDKTagsToTags(t *testing.T) {
 		{
 			name: "empty case",
 			args: args{
-				sdkTags: []*elbv2sdk.Tag{},
+				sdkTags: []elbv2types.Tag{},
 			},
 			want: map[string]string{},
 		},

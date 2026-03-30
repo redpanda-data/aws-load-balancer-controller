@@ -2,17 +2,18 @@ package shield
 
 import (
 	"context"
+	shieldtypes "github.com/aws/aws-sdk-go-v2/service/shield/types"
 	"testing"
 	"time"
 
-	awssdk "github.com/aws/aws-sdk-go/aws"
-	shieldsdk "github.com/aws/aws-sdk-go/service/shield"
+	shieldsdk "github.com/aws/aws-sdk-go-v2/service/shield"
 	"github.com/go-logr/logr"
 	"github.com/golang/mock/gomock"
 	"github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
 	"k8s.io/apimachinery/pkg/util/cache"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/aws/services"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 func Test_defaultProtectionManager_IsSubscribed(t *testing.T) {
@@ -42,7 +43,7 @@ func Test_defaultProtectionManager_IsSubscribed(t *testing.T) {
 					{
 						req: &shieldsdk.GetSubscriptionStateInput{},
 						resp: &shieldsdk.GetSubscriptionStateOutput{
-							SubscriptionState: awssdk.String(shieldsdk.SubscriptionStateActive),
+							SubscriptionState: shieldtypes.SubscriptionStateActive,
 						},
 					},
 				},
@@ -61,7 +62,7 @@ func Test_defaultProtectionManager_IsSubscribed(t *testing.T) {
 					{
 						req: &shieldsdk.GetSubscriptionStateInput{},
 						resp: &shieldsdk.GetSubscriptionStateOutput{
-							SubscriptionState: awssdk.String(shieldsdk.SubscriptionStateInactive),
+							SubscriptionState: shieldtypes.SubscriptionStateInactive,
 						},
 					},
 				},
@@ -97,7 +98,7 @@ func Test_defaultProtectionManager_IsSubscribed(t *testing.T) {
 					{
 						req: &shieldsdk.GetSubscriptionStateInput{},
 						resp: &shieldsdk.GetSubscriptionStateOutput{
-							SubscriptionState: awssdk.String(shieldsdk.SubscriptionStateInactive),
+							SubscriptionState: shieldtypes.SubscriptionStateInactive,
 						},
 					},
 				},
@@ -119,13 +120,13 @@ func Test_defaultProtectionManager_IsSubscribed(t *testing.T) {
 					{
 						req: &shieldsdk.GetSubscriptionStateInput{},
 						resp: &shieldsdk.GetSubscriptionStateOutput{
-							SubscriptionState: awssdk.String(shieldsdk.SubscriptionStateInactive),
+							SubscriptionState: shieldtypes.SubscriptionStateInactive,
 						},
 					},
 					{
 						req: &shieldsdk.GetSubscriptionStateInput{},
 						resp: &shieldsdk.GetSubscriptionStateOutput{
-							SubscriptionState: awssdk.String(shieldsdk.SubscriptionStateActive),
+							SubscriptionState: shieldtypes.SubscriptionStateActive,
 						},
 					},
 				},
@@ -152,7 +153,7 @@ func Test_defaultProtectionManager_IsSubscribed(t *testing.T) {
 
 			m := &defaultProtectionManager{
 				shieldClient:              shieldClient,
-				logger:                    logr.Discard(),
+				logger:                    logr.New(&log.NullLogSink{}),
 				subscriptionStateCache:    cache.NewExpiring(),
 				subscriptionStateCacheTTL: tt.fields.subscriptionStateCacheTTL,
 			}

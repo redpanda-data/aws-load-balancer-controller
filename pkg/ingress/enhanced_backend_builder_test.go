@@ -4,13 +4,14 @@ import (
 	"context"
 	"testing"
 
-	awssdk "github.com/aws/aws-sdk-go/aws"
+	awssdk "github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/google/go-cmp/cmp"
 	"github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
 	networking "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -165,6 +166,328 @@ func Test_defaultEnhancedBackendBuilder_Build(t *testing.T) {
 			},
 		},
 		{
+			name: "vanilla serviceBackend with additional conditions with regexValues",
+			env: env{
+				svcs: []*corev1.Service{svc1},
+			},
+			fields: fields{
+				tolerateNonExistentBackendService: true,
+				tolerateNonExistentBackendAction:  true,
+			},
+			args: args{
+				ing: &networking.Ingress{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: "awesome-ns",
+						Annotations: map[string]string{
+							"alb.ingress.kubernetes.io/conditions.svc-1": `[{"field":"http-header","httpHeaderConfig":{"httpHeaderName": "HeaderName", "regexValues":["^HeaderValue[12]$"]}}]`,
+						},
+					},
+				},
+				backend: networking.IngressBackend{
+					Service: &networking.IngressServiceBackend{
+						Name: "svc-1",
+						Port: backendPortHTTP,
+					},
+				},
+				loadBackendServices: true,
+				loadAuthConfig:      true,
+				backendServices:     map[types.NamespacedName]*corev1.Service{},
+			},
+			want: EnhancedBackend{
+				Conditions: []RuleCondition{
+					{
+						Field: RuleConditionFieldHTTPHeader,
+						HTTPHeaderConfig: &HTTPHeaderConditionConfig{
+							HTTPHeaderName: "HeaderName",
+							RegexValues:    []string{"^HeaderValue[12]$"},
+						},
+					},
+				},
+				Action: Action{
+					Type: ActionTypeForward,
+					ForwardConfig: &ForwardActionConfig{
+						TargetGroups: []TargetGroupTuple{
+							{
+								ServiceName: awssdk.String("svc-1"),
+								ServicePort: &portHTTP,
+							},
+						},
+					},
+				},
+				AuthConfig: AuthConfig{
+					Type:                     AuthTypeNone,
+					OnUnauthenticatedRequest: "authenticate",
+					Scope:                    "openid",
+					SessionCookieName:        "AWSELBAuthSessionCookie",
+					SessionTimeout:           604800,
+				},
+			},
+			wantBackendServices: map[types.NamespacedName]*corev1.Service{
+				types.NamespacedName{Namespace: "awesome-ns", Name: "svc-1"}: svc1,
+			},
+		},
+		{
+			name: "vanilla serviceBackend with transforms",
+			env: env{
+				svcs: []*corev1.Service{svc1},
+			},
+			fields: fields{
+				tolerateNonExistentBackendService: true,
+				tolerateNonExistentBackendAction:  true,
+			},
+			args: args{
+				ing: &networking.Ingress{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: "awesome-ns",
+						Annotations: map[string]string{
+							"alb.ingress.kubernetes.io/transforms.svc-1": `[{"type":"url-rewrite","urlRewriteConfig":{"rewrites":[{"regex":"/path1/(.*)","replace":"/newpath1/$1"}]}}]`,
+						},
+					},
+				},
+				backend: networking.IngressBackend{
+					Service: &networking.IngressServiceBackend{
+						Name: "svc-1",
+						Port: backendPortHTTP,
+					},
+				},
+				loadBackendServices: true,
+				loadAuthConfig:      true,
+				backendServices:     map[types.NamespacedName]*corev1.Service{},
+			},
+			want: EnhancedBackend{
+				Transforms: []Transform{
+					{
+						Type: TransformTypeUrlRewrite,
+						UrlRewriteConfig: &RewriteConfigObject{
+							Rewrites: []RewriteConfig{
+								{
+									Regex:   "/path1/(.*)",
+									Replace: "/newpath1/$1",
+								},
+							},
+						},
+					},
+				},
+				Action: Action{
+					Type: ActionTypeForward,
+					ForwardConfig: &ForwardActionConfig{
+						TargetGroups: []TargetGroupTuple{
+							{
+								ServiceName: awssdk.String("svc-1"),
+								ServicePort: &portHTTP,
+							},
+						},
+					},
+				},
+				AuthConfig: AuthConfig{
+					Type:                     AuthTypeNone,
+					OnUnauthenticatedRequest: "authenticate",
+					Scope:                    "openid",
+					SessionCookieName:        "AWSELBAuthSessionCookie",
+					SessionTimeout:           604800,
+				},
+			},
+			wantBackendServices: map[types.NamespacedName]*corev1.Service{
+				types.NamespacedName{Namespace: "awesome-ns", Name: "svc-1"}: svc1,
+			},
+		},
+		{
+			name: "invalid hostHeaderConfig, both values and regexValues specified",
+			args: args{
+				ing: &networking.Ingress{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: "awesome-ns",
+						Annotations: map[string]string{
+							"alb.ingress.kubernetes.io/conditions.svc-1": `[{"field":"host-header","hostHeaderConfig":{"values":["example.com"],"regexValues":["^example\\.com$"]}}]`,
+						},
+					},
+				},
+				backend: networking.IngressBackend{
+					Service: &networking.IngressServiceBackend{
+						Name: "svc-1",
+						Port: backendPortHTTP,
+					},
+				},
+			},
+			wantErr: errors.New("invalid hostHeaderConfig: precisely one of values and regexValues can be specified"),
+		},
+		{
+			name: "invalid hostHeaderConfig, neither values nor regexValues specified",
+			args: args{
+				ing: &networking.Ingress{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: "awesome-ns",
+						Annotations: map[string]string{
+							"alb.ingress.kubernetes.io/conditions.svc-1": `[{"field":"host-header","hostHeaderConfig":{}}]`,
+						},
+					},
+				},
+				backend: networking.IngressBackend{
+					Service: &networking.IngressServiceBackend{
+						Name: "svc-1",
+						Port: backendPortHTTP,
+					},
+				},
+			},
+			wantErr: errors.New("invalid hostHeaderConfig: values or regexValues must be specified"),
+		},
+		{
+			name: "invalid httpHeaderConfig, both values and regexValues specified",
+			args: args{
+				ing: &networking.Ingress{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: "awesome-ns",
+						Annotations: map[string]string{
+							"alb.ingress.kubernetes.io/conditions.svc-1": `[{"field":"http-header","httpHeaderConfig":{"httpHeaderName":"HeaderName","values":["HeaderValue1","HeaderValue2"],"regexValues":["^HeaderValue[12]$"]}}]`,
+						},
+					},
+				},
+				backend: networking.IngressBackend{
+					Service: &networking.IngressServiceBackend{
+						Name: "svc-1",
+						Port: backendPortHTTP,
+					},
+				},
+			},
+			wantErr: errors.New("invalid httpHeaderConfig: precisely one of values and regexValues can be specified"),
+		},
+		{
+			name: "invalid httpHeaderConfig, neither values nor regexValues specified",
+			args: args{
+				ing: &networking.Ingress{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: "awesome-ns",
+						Annotations: map[string]string{
+							"alb.ingress.kubernetes.io/conditions.svc-1": `[{"field":"http-header","httpHeaderConfig":{"httpHeaderName":"HeaderName"}}]`,
+						},
+					},
+				},
+				backend: networking.IngressBackend{
+					Service: &networking.IngressServiceBackend{
+						Name: "svc-1",
+						Port: backendPortHTTP,
+					},
+				},
+			},
+			wantErr: errors.New("invalid httpHeaderConfig: values or regexValues must be specified"),
+		},
+		{
+			name: "invalid pathPatternConfig, both values and regexValues specified",
+			args: args{
+				ing: &networking.Ingress{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: "awesome-ns",
+						Annotations: map[string]string{
+							"alb.ingress.kubernetes.io/conditions.svc-1": `[{"field":"path-pattern","pathPatternConfig":{"values":["/mypath"],"regexValues":["^/mypath$"]}}]`,
+						},
+					},
+				},
+				backend: networking.IngressBackend{
+					Service: &networking.IngressServiceBackend{
+						Name: "svc-1",
+						Port: backendPortHTTP,
+					},
+				},
+			},
+			wantErr: errors.New("invalid pathPatternConfig: precisely one of values and regexValues can be specified"),
+		},
+		{
+			name: "invalid pathPatternConfig, neither values nor regexValues specified",
+			args: args{
+				ing: &networking.Ingress{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: "awesome-ns",
+						Annotations: map[string]string{
+							"alb.ingress.kubernetes.io/conditions.svc-1": `[{"field":"path-pattern","pathPatternConfig":{}}]`,
+						},
+					},
+				},
+				backend: networking.IngressBackend{
+					Service: &networking.IngressServiceBackend{
+						Name: "svc-1",
+						Port: backendPortHTTP,
+					},
+				},
+			},
+			wantErr: errors.New("invalid pathPatternConfig: values or regexValues must be specified"),
+		},
+
+		{
+			name: "vanilla serviceBackend with conditions and transforms",
+			env: env{
+				svcs: []*corev1.Service{svc1},
+			},
+			fields: fields{
+				tolerateNonExistentBackendService: true,
+				tolerateNonExistentBackendAction:  true,
+			},
+			args: args{
+				ing: &networking.Ingress{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: "awesome-ns",
+						Annotations: map[string]string{
+							"alb.ingress.kubernetes.io/conditions.svc-1": `[{"field":"http-header","httpHeaderConfig":{"httpHeaderName": "HeaderName", "values":["HeaderValue1", "HeaderValue2"]}}]`,
+							"alb.ingress.kubernetes.io/transforms.svc-1": `[{"type":"url-rewrite","urlRewriteConfig":{"rewrites":[{"regex":"/path1/(.*)","replace":"/newpath1/$1"}]}}]`,
+						},
+					},
+				},
+				backend: networking.IngressBackend{
+					Service: &networking.IngressServiceBackend{
+						Name: "svc-1",
+						Port: backendPortHTTP,
+					},
+				},
+				loadBackendServices: true,
+				loadAuthConfig:      true,
+				backendServices:     map[types.NamespacedName]*corev1.Service{},
+			},
+			want: EnhancedBackend{
+				Conditions: []RuleCondition{
+					{
+						Field: RuleConditionFieldHTTPHeader,
+						HTTPHeaderConfig: &HTTPHeaderConditionConfig{
+							HTTPHeaderName: "HeaderName",
+							Values:         []string{"HeaderValue1", "HeaderValue2"},
+						},
+					},
+				},
+				Transforms: []Transform{
+					{
+						Type: TransformTypeUrlRewrite,
+						UrlRewriteConfig: &RewriteConfigObject{
+							Rewrites: []RewriteConfig{
+								{
+									Regex:   "/path1/(.*)",
+									Replace: "/newpath1/$1",
+								},
+							},
+						},
+					},
+				},
+				Action: Action{
+					Type: ActionTypeForward,
+					ForwardConfig: &ForwardActionConfig{
+						TargetGroups: []TargetGroupTuple{
+							{
+								ServiceName: awssdk.String("svc-1"),
+								ServicePort: &portHTTP,
+							},
+						},
+					},
+				},
+				AuthConfig: AuthConfig{
+					Type:                     AuthTypeNone,
+					OnUnauthenticatedRequest: "authenticate",
+					Scope:                    "openid",
+					SessionCookieName:        "AWSELBAuthSessionCookie",
+					SessionTimeout:           604800,
+				},
+			},
+			wantBackendServices: map[types.NamespacedName]*corev1.Service{
+				types.NamespacedName{Namespace: "awesome-ns", Name: "svc-1"}: svc1,
+			},
+		},
+		{
 			name: "vanilla serviceBackend with additional auth configuration",
 			env: env{
 				svcs: []*corev1.Service{svc1},
@@ -221,6 +544,225 @@ func Test_defaultEnhancedBackendBuilder_Build(t *testing.T) {
 			wantBackendServices: map[types.NamespacedName]*corev1.Service{
 				types.NamespacedName{Namespace: "awesome-ns", Name: "svc-1"}: svc1,
 			},
+		},
+		{
+			name: "vanilla serviceBackend with jwt validation containing no additional claims",
+			env: env{
+				svcs: []*corev1.Service{svc1},
+			},
+			fields: fields{
+				tolerateNonExistentBackendService: true,
+				tolerateNonExistentBackendAction:  true,
+			},
+			args: args{
+				ing: &networking.Ingress{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: "awesome-ns",
+						Annotations: map[string]string{
+							"alb.ingress.kubernetes.io/jwt-validation": "{\"jwksEndpoint\":\"https://issuer.example.com/.well-known/jwks.json\",\"issuer\":\"https://issuer.com\"}",
+						},
+					},
+				},
+				backend: networking.IngressBackend{
+					Service: &networking.IngressServiceBackend{
+						Name: "svc-1",
+						Port: backendPortHTTP,
+					},
+				},
+				loadBackendServices: true,
+				loadAuthConfig:      true,
+				backendServices:     map[types.NamespacedName]*corev1.Service{},
+			},
+			want: EnhancedBackend{
+				Action: Action{
+					Type: ActionTypeForward,
+					ForwardConfig: &ForwardActionConfig{
+						TargetGroups: []TargetGroupTuple{
+							{
+								ServiceName: awssdk.String("svc-1"),
+								ServicePort: &portHTTP,
+							},
+						},
+					},
+				},
+				AuthConfig: AuthConfig{
+					Type:                     AuthTypeNone,
+					OnUnauthenticatedRequest: "authenticate",
+					Scope:                    "openid",
+					SessionCookieName:        "AWSELBAuthSessionCookie",
+					SessionTimeout:           604800,
+				},
+				JwtValidationConfig: &JwtValidationConfig{
+					JwksEndpoint: "https://issuer.example.com/.well-known/jwks.json",
+					Issuer:       "https://issuer.com",
+				},
+			},
+			wantBackendServices: map[types.NamespacedName]*corev1.Service{
+				types.NamespacedName{Namespace: "awesome-ns", Name: "svc-1"}: svc1,
+			},
+		},
+		{
+			name: "vanilla serviceBackend with jwt validation containing additional claims",
+			env: env{
+				svcs: []*corev1.Service{svc1},
+			},
+			fields: fields{
+				tolerateNonExistentBackendService: true,
+				tolerateNonExistentBackendAction:  true,
+			},
+			args: args{
+				ing: &networking.Ingress{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: "awesome-ns",
+						Annotations: map[string]string{
+							"alb.ingress.kubernetes.io/jwt-validation": "{\"jwksEndpoint\":\"https://issuer.example.com/.well-known/jwks.json\",\"issuer\":\"https://issuer.com\",\"additionalClaims\":[{\"format\":\"string-array\",\"name\":\"scope\",\"values\":[\"read:api\",\"write:api\"]},{\"format\":\"single-string\",\"name\":\"iat\",\"values\":[\"12456\"]},{\"format\":\"space-separated-values\",\"name\":\"aud\",\"values\":[\"https://example.com\",\"https://another-site.com\"]}]}",
+						},
+					},
+				},
+				backend: networking.IngressBackend{
+					Service: &networking.IngressServiceBackend{
+						Name: "svc-1",
+						Port: backendPortHTTP,
+					},
+				},
+				loadBackendServices: true,
+				loadAuthConfig:      true,
+				backendServices:     map[types.NamespacedName]*corev1.Service{},
+			},
+			want: EnhancedBackend{
+				Action: Action{
+					Type: ActionTypeForward,
+					ForwardConfig: &ForwardActionConfig{
+						TargetGroups: []TargetGroupTuple{
+							{
+								ServiceName: awssdk.String("svc-1"),
+								ServicePort: &portHTTP,
+							},
+						},
+					},
+				},
+				AuthConfig: AuthConfig{
+					Type:                     AuthTypeNone,
+					OnUnauthenticatedRequest: "authenticate",
+					Scope:                    "openid",
+					SessionCookieName:        "AWSELBAuthSessionCookie",
+					SessionTimeout:           604800,
+				},
+				JwtValidationConfig: &JwtValidationConfig{
+					JwksEndpoint: "https://issuer.example.com/.well-known/jwks.json",
+					Issuer:       "https://issuer.com",
+					AdditionalClaims: []JwtAdditionalClaim{
+						{
+							Format: "string-array",
+							Name:   "scope",
+							Values: []string{"read:api", "write:api"},
+						},
+						{
+							Format: "single-string",
+							Name:   "iat",
+							Values: []string{"12456"},
+						},
+						{
+							Format: "space-separated-values",
+							Name:   "aud",
+							Values: []string{"https://example.com", "https://another-site.com"},
+						},
+					},
+				},
+			},
+			wantBackendServices: map[types.NamespacedName]*corev1.Service{
+				types.NamespacedName{Namespace: "awesome-ns", Name: "svc-1"}: svc1,
+			},
+		},
+		{
+			name: "vanilla serviceBackend with jwt validation with malformed json",
+			env: env{
+				svcs: []*corev1.Service{svc1},
+			},
+			fields: fields{
+				tolerateNonExistentBackendService: true,
+				tolerateNonExistentBackendAction:  true,
+			},
+			args: args{
+				ing: &networking.Ingress{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: "awesome-ns",
+						Annotations: map[string]string{
+							"alb.ingress.kubernetes.io/jwt-validation": "{\"jwksEndpoint\":\"https://issuer.example.com/.well-known/jwks.json\",\"issuer\":\"https://issuer.com\"",
+						},
+					},
+				},
+				backend: networking.IngressBackend{
+					Service: &networking.IngressServiceBackend{
+						Name: "svc-1",
+						Port: backendPortHTTP,
+					},
+				},
+				loadBackendServices: true,
+				loadAuthConfig:      true,
+				backendServices:     map[types.NamespacedName]*corev1.Service{},
+			},
+			wantErr: errors.New("failed to parse json annotation, alb.ingress.kubernetes.io/jwt-validation: {\"jwksEndpoint\":\"https://issuer.example.com/.well-known/jwks.json\",\"issuer\":\"https://issuer.com\": unexpected end of JSON input"),
+		},
+		{
+			name: "vanilla serviceBackend with jwt validation missing required fields",
+			env: env{
+				svcs: []*corev1.Service{svc1},
+			},
+			fields: fields{
+				tolerateNonExistentBackendService: true,
+				tolerateNonExistentBackendAction:  true,
+			},
+			args: args{
+				ing: &networking.Ingress{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: "awesome-ns",
+						Annotations: map[string]string{
+							"alb.ingress.kubernetes.io/jwt-validation": "{\"jwksEndpoint\":\"https://issuer.example.com/.well-known/jwks.json\"}",
+						},
+					},
+				},
+				backend: networking.IngressBackend{
+					Service: &networking.IngressServiceBackend{
+						Name: "svc-1",
+						Port: backendPortHTTP,
+					},
+				},
+				loadBackendServices: true,
+				loadAuthConfig:      true,
+				backendServices:     map[types.NamespacedName]*corev1.Service{},
+			},
+			wantErr: errors.New("issuer is a required field for jwt validation"),
+		},
+		{
+			name: "vanilla serviceBackend with jwt validation missing required fields when including additional claims",
+			env: env{
+				svcs: []*corev1.Service{svc1},
+			},
+			fields: fields{
+				tolerateNonExistentBackendService: true,
+				tolerateNonExistentBackendAction:  true,
+			},
+			args: args{
+				ing: &networking.Ingress{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: "awesome-ns",
+						Annotations: map[string]string{
+							"alb.ingress.kubernetes.io/jwt-validation": "{\"jwksEndpoint\":\"https://issuer.example.com/.well-known/jwks.json\",\"issuer\":\"https://issuer.com\",\"additionalClaims\":[{\"name\":\"scope\",\"values\":[\"read:api\",\"write:api\"]},{\"format\":\"single-string\",\"name\":\"iat\",\"values\":[\"12456\"]},{\"format\":\"space-separated-values\",\"name\":\"aud\",\"values\":[\"https://example.com\",\"https://another-site.com\"]}]}",
+						},
+					},
+				},
+				backend: networking.IngressBackend{
+					Service: &networking.IngressServiceBackend{
+						Name: "svc-1",
+						Port: backendPortHTTP,
+					},
+				},
+				loadBackendServices: true,
+				loadAuthConfig:      true,
+				backendServices:     map[types.NamespacedName]*corev1.Service{},
+			},
+			wantErr: errors.New("format is a required field for additional claims for jwt validation"),
 		},
 		{
 			name: "vanilla serviceBackend - non-existent service and tolerateNonExistentBackendService==true",
@@ -625,9 +1167,9 @@ func Test_defaultEnhancedBackendBuilder_Build(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := context.Background()
-			k8sClient := testclient.NewFakeClient()
-			k8sSchema := k8sClient.Scheme()
+			k8sSchema := runtime.NewScheme()
 			clientgoscheme.AddToScheme(k8sSchema)
+			k8sClient := testclient.NewClientBuilder().WithScheme(k8sSchema).Build()
 			for _, svc := range tt.env.svcs {
 				assert.NoError(t, k8sClient.Create(ctx, svc.DeepCopy()))
 			}
@@ -689,6 +1231,23 @@ func Test_defaultEnhancedBackendBuilder_buildConditions(t *testing.T) {
 			},
 		},
 		{
+			name: "host header condition with regexValues",
+			args: args{
+				ingAnnotation: map[string]string{
+					"alb.ingress.kubernetes.io/conditions.rule-path1": `[{"field":"host-header","hostHeaderConfig":{"regexValues":["^.+\\.example\\.com$"]}}]`,
+				},
+				svcName: "rule-path1",
+			},
+			want: []RuleCondition{
+				{
+					Field: RuleConditionFieldHostHeader,
+					HostHeaderConfig: &HostHeaderConditionConfig{
+						RegexValues: []string{`^.+\.example\.com$`},
+					},
+				},
+			},
+		},
+		{
 			name: "host header condition - old camelcase case json key",
 			args: args{
 				ingAnnotation: map[string]string{
@@ -718,6 +1277,23 @@ func Test_defaultEnhancedBackendBuilder_buildConditions(t *testing.T) {
 					Field: RuleConditionFieldPathPattern,
 					PathPatternConfig: &PathPatternConditionConfig{
 						Values: []string{"/anno/path2"},
+					},
+				},
+			},
+		},
+		{
+			name: "path pattern condition with regexValues",
+			args: args{
+				ingAnnotation: map[string]string{
+					"alb.ingress.kubernetes.io/conditions.rule-path2": `[{"field":"path-pattern","pathPatternConfig":{"regexValues":["^\/anno\/.+$"]}}]`,
+				},
+				svcName: "rule-path2",
+			},
+			want: []RuleCondition{
+				{
+					Field: RuleConditionFieldPathPattern,
+					PathPatternConfig: &PathPatternConditionConfig{
+						RegexValues: []string{`^/anno/.+$`},
 					},
 				},
 			},
@@ -753,6 +1329,24 @@ func Test_defaultEnhancedBackendBuilder_buildConditions(t *testing.T) {
 					HTTPHeaderConfig: &HTTPHeaderConditionConfig{
 						HTTPHeaderName: "HeaderName",
 						Values:         []string{"HeaderValue1", "HeaderValue2"},
+					},
+				},
+			},
+		},
+		{
+			name: "http header condition with regexValues",
+			args: args{
+				ingAnnotation: map[string]string{
+					"alb.ingress.kubernetes.io/conditions.rule-path3": `[{"field":"http-header","httpHeaderConfig":{"httpHeaderName": "HeaderName", "regexValues":[".+"]}}]`,
+				},
+				svcName: "rule-path3",
+			},
+			want: []RuleCondition{
+				{
+					Field: RuleConditionFieldHTTPHeader,
+					HTTPHeaderConfig: &HTTPHeaderConditionConfig{
+						HTTPHeaderName: "HeaderName",
+						RegexValues:    []string{".+"},
 					},
 				},
 			},
@@ -1048,10 +1642,29 @@ func Test_defaultEnhancedBackendBuilder_buildActionViaAnnotation(t *testing.T) {
 			},
 		},
 		{
+			name: "forward action - simplified schema with target group name",
+			args: args{
+				ingAnnotation: map[string]string{
+					"alb.ingress.kubernetes.io/actions.forward-single-tg": `{"type":"forward","targetGroupName": "tg-name"}`,
+				},
+				svcName: "forward-single-tg",
+			},
+			want: Action{
+				Type: ActionTypeForward,
+				ForwardConfig: &ForwardActionConfig{
+					TargetGroups: []TargetGroupTuple{
+						{
+							TargetGroupName: awssdk.String("tg-name"),
+						},
+					},
+				},
+			},
+		},
+		{
 			name: "forward action - advanced schema",
 			args: args{
 				ingAnnotation: map[string]string{
-					"alb.ingress.kubernetes.io/actions.forward-multiple-tg": `{"type":"forward","forwardConfig":{"targetGroups":[{"serviceName":"service-1","servicePort":"http","weight":20},{"serviceName":"service-2","servicePort":80,"weight":20},{"targetGroupARN":"tg-arn","weight":60}],"targetGroupStickinessConfig":{"enabled":true,"durationSeconds":200}}}`,
+					"alb.ingress.kubernetes.io/actions.forward-multiple-tg": `{"type":"forward","forwardConfig":{"targetGroups":[{"serviceName":"service-1","servicePort":"http","weight":20},{"serviceName":"service-2","servicePort":80,"weight":20},{"targetGroupARN":"tg-arn","weight":60},{"targetGroupName":"tg-name","weight":80}],"targetGroupStickinessConfig":{"enabled":true,"durationSeconds":200}}}`,
 				},
 				svcName: "forward-multiple-tg",
 			},
@@ -1062,21 +1675,25 @@ func Test_defaultEnhancedBackendBuilder_buildActionViaAnnotation(t *testing.T) {
 						{
 							ServiceName: awssdk.String("service-1"),
 							ServicePort: &portHTTP,
-							Weight:      awssdk.Int64(20),
+							Weight:      awssdk.Int32(20),
 						},
 						{
 							ServiceName: awssdk.String("service-2"),
 							ServicePort: &port80,
-							Weight:      awssdk.Int64(20),
+							Weight:      awssdk.Int32(20),
 						},
 						{
 							TargetGroupARN: awssdk.String("tg-arn"),
-							Weight:         awssdk.Int64(60),
+							Weight:         awssdk.Int32(60),
+						},
+						{
+							TargetGroupName: awssdk.String("tg-name"),
+							Weight:          awssdk.Int32(80),
 						},
 					},
 					TargetGroupStickinessConfig: &TargetGroupStickinessConfig{
 						Enabled:         awssdk.Bool(true),
-						DurationSeconds: awssdk.Int64(200),
+						DurationSeconds: awssdk.Int32(200),
 					},
 				},
 			},
@@ -1096,21 +1713,21 @@ func Test_defaultEnhancedBackendBuilder_buildActionViaAnnotation(t *testing.T) {
 						{
 							ServiceName: awssdk.String("service-1"),
 							ServicePort: &portHTTP,
-							Weight:      awssdk.Int64(20),
+							Weight:      awssdk.Int32(20),
 						},
 						{
 							ServiceName: awssdk.String("service-2"),
 							ServicePort: &port80,
-							Weight:      awssdk.Int64(20),
+							Weight:      awssdk.Int32(20),
 						},
 						{
 							TargetGroupARN: awssdk.String("tg-arn"),
-							Weight:         awssdk.Int64(60),
+							Weight:         awssdk.Int32(60),
 						},
 					},
 					TargetGroupStickinessConfig: &TargetGroupStickinessConfig{
 						Enabled:         awssdk.Bool(true),
-						DurationSeconds: awssdk.Int64(200),
+						DurationSeconds: awssdk.Int32(200),
 					},
 				},
 			},
@@ -1130,12 +1747,12 @@ func Test_defaultEnhancedBackendBuilder_buildActionViaAnnotation(t *testing.T) {
 						{
 							ServiceName: awssdk.String("service-1"),
 							ServicePort: &port80,
-							Weight:      awssdk.Int64(40),
+							Weight:      awssdk.Int32(40),
 						},
 						{
 							ServiceName: awssdk.String("service-2"),
 							ServicePort: &port443,
-							Weight:      awssdk.Int64(60),
+							Weight:      awssdk.Int32(60),
 						},
 					},
 				},
@@ -1595,9 +2212,9 @@ func Test_defaultEnhancedBackendBuilder_loadBackendServices(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := context.Background()
-			k8sClient := testclient.NewFakeClient()
-			k8sSchema := k8sClient.Scheme()
+			k8sSchema := runtime.NewScheme()
 			clientgoscheme.AddToScheme(k8sSchema)
+			k8sClient := testclient.NewClientBuilder().WithScheme(k8sSchema).Build()
 			for _, svc := range tt.env.svcs {
 				assert.NoError(t, k8sClient.Create(ctx, svc.DeepCopy()))
 			}
@@ -1800,6 +2417,112 @@ func Test_defaultEnhancedBackendBuilder_build503ResponseAction(t *testing.T) {
 			b := &defaultEnhancedBackendBuilder{}
 			got := b.build503ResponseAction(tt.args.messageBody)
 			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func Test_defaultEnhancedBackendBuilder_buildTransforms(t *testing.T) {
+	type args struct {
+		ingAnnotation map[string]string
+		svcName       string
+	}
+	tests := []struct {
+		name    string
+		args    args
+		want    []Transform
+		wantErr error
+	}{
+		{
+			name: "url rewrite transform",
+			args: args{
+				ingAnnotation: map[string]string{
+					"alb.ingress.kubernetes.io/transforms.rule-path1": `[{"type":"url-rewrite","urlRewriteConfig":{"rewrites":[{"regex":"/path1/(.*)","replace":"/newpath1/$1"}]}}]`,
+				},
+				svcName: "rule-path1",
+			},
+			want: []Transform{
+				{
+					Type: TransformTypeUrlRewrite,
+					UrlRewriteConfig: &RewriteConfigObject{
+						Rewrites: []RewriteConfig{
+							{
+								Regex:   "/path1/(.*)",
+								Replace: "/newpath1/$1",
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "host header rewrite transform",
+			args: args{
+				ingAnnotation: map[string]string{
+					"alb.ingress.kubernetes.io/transforms.rule-path2": `[{"type":"host-header-rewrite","hostHeaderRewriteConfig":{"rewrites":[{"regex":"example.com","replace":"new-example.com"}]}}]`,
+				},
+				svcName: "rule-path2",
+			},
+			want: []Transform{
+				{
+					Type: TransformTypeHostHeaderRewrite,
+					HostHeaderRewriteConfig: &RewriteConfigObject{
+						Rewrites: []RewriteConfig{
+							{
+								Regex:   "example.com",
+								Replace: "new-example.com",
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "multiple transforms",
+			args: args{
+				ingAnnotation: map[string]string{
+					"alb.ingress.kubernetes.io/transforms.rule-path3": `[{"type":"url-rewrite","urlRewriteConfig":{"rewrites":[{"regex":"/path1/(.*)","replace":"/newpath1/$1"}]}},{"type":"host-header-rewrite","hostHeaderRewriteConfig":{"rewrites":[{"regex":"example.com","replace":"new-example.com"}]}}]`,
+				},
+				svcName: "rule-path3",
+			},
+			want: []Transform{
+				{
+					Type: TransformTypeUrlRewrite,
+					UrlRewriteConfig: &RewriteConfigObject{
+						Rewrites: []RewriteConfig{
+							{
+								Regex:   "/path1/(.*)",
+								Replace: "/newpath1/$1",
+							},
+						},
+					},
+				},
+				{
+					Type: TransformTypeHostHeaderRewrite,
+					HostHeaderRewriteConfig: &RewriteConfigObject{
+						Rewrites: []RewriteConfig{
+							{
+								Regex:   "example.com",
+								Replace: "new-example.com",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			annotationParser := annotations.NewSuffixAnnotationParser("alb.ingress.kubernetes.io")
+			b := &defaultEnhancedBackendBuilder{
+				annotationParser: annotationParser,
+			}
+			got, err := b.buildTransforms(context.Background(), tt.args.ingAnnotation, tt.args.svcName)
+			if tt.wantErr != nil {
+				assert.EqualError(t, err, tt.wantErr.Error())
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, tt.want, got, "diff", cmp.Diff(tt.want, got))
+			}
 		})
 	}
 }

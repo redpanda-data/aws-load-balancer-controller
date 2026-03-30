@@ -4,15 +4,16 @@ import (
 	"context"
 	"testing"
 
-	awssdk "github.com/aws/aws-sdk-go/aws"
+	awssdk "github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	elbv2model "sigs.k8s.io/aws-load-balancer-controller/pkg/model/elbv2"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 func Test_defaultRuleOptimizer_Optimize(t *testing.T) {
 	type args struct {
-		port     int64
+		port     int32
 		protocol elbv2model.Protocol
 		rules    []Rule
 	}
@@ -234,7 +235,7 @@ func Test_defaultRuleOptimizer_Optimize(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			o := &defaultRuleOptimizer{
-				logger: logr.Discard(),
+				logger: logr.New(&log.NullLogSink{}),
 			}
 			got, err := o.Optimize(context.Background(), tt.args.port, tt.args.protocol, tt.args.rules)
 			if tt.wantErr != nil {
@@ -249,7 +250,7 @@ func Test_defaultRuleOptimizer_Optimize(t *testing.T) {
 
 func Test_isInfiniteRedirectRule(t *testing.T) {
 	type args struct {
-		port     int64
+		port     int32
 		protocol elbv2model.Protocol
 		rule     Rule
 	}

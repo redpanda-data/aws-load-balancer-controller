@@ -19,6 +19,7 @@ package v1beta1
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"sigs.k8s.io/aws-load-balancer-controller/pkg/model/elbv2"
 )
 
 // +kubebuilder:validation:Enum=instance;ip
@@ -124,12 +125,25 @@ type TargetGroupBindingNetworking struct {
 // TargetGroupBindingSpec defines the desired state of TargetGroupBinding
 type TargetGroupBindingSpec struct {
 	// targetGroupARN is the Amazon Resource Name (ARN) for the TargetGroup.
-	// +kubebuilder:validation:MinLength=1
-	TargetGroupARN string `json:"targetGroupARN"`
+	// +optional
+	TargetGroupARN string `json:"targetGroupARN,omitempty"`
+
+	// targetGroupName is the Name of the TargetGroup.
+	// +optional
+	TargetGroupName string `json:"targetGroupName,omitempty"`
+
+	// MultiClusterTargetGroup Denotes if the TargetGroup is shared among multiple clusters
+	// +optional
+	MultiClusterTargetGroup bool `json:"multiClusterTargetGroup,omitempty"`
 
 	// targetType is the TargetType of TargetGroup. If unspecified, it will be automatically inferred.
 	// +optional
 	TargetType *TargetType `json:"targetType,omitempty"`
+
+	// targetGroupProtocol is the Protocol of the TargetGroup. If unspecified, it will be automatically inferred.
+	// +optional
+	// +kubebuilder:validation:Enum=HTTP;HTTPS;TCP;TLS;UDP;TCP_UDP;QUIC;TCP_QUIC
+	TargetGroupProtocol *elbv2.Protocol `json:"targetGroupProtocol,omitempty"`
 
 	// serviceRef is a reference to a Kubernetes Service and ServicePort.
 	ServiceRef ServiceReference `json:"serviceRef"`
@@ -145,6 +159,18 @@ type TargetGroupBindingSpec struct {
 	// ipAddressType specifies whether the target group is of type IPv4 or IPv6. If unspecified, it will be automatically inferred.
 	// +optional
 	IPAddressType *TargetGroupIPAddressType `json:"ipAddressType,omitempty"`
+
+	// VpcID is the VPC of the TargetGroup. If unspecified, it will be automatically inferred.
+	// +optional
+	VpcID string `json:"vpcID,omitempty"`
+
+	// IAM Role ARN to assume when calling AWS APIs. Useful if the target group is in a different AWS account
+	// +optional
+	IamRoleArnToAssume string `json:"iamRoleArnToAssume,omitempty"`
+
+	// IAM Role ARN to assume when calling AWS APIs. Needed to assume a role in another account and prevent the confused deputy problem. https://docs.aws.amazon.com/IAM/latest/UserGuide/confused-deputy.html
+	// +optional
+	AssumeRoleExternalId string `json:"assumeRoleExternalId,omitempty"`
 }
 
 // TargetGroupBindingStatus defines the observed state of TargetGroupBinding
@@ -152,6 +178,10 @@ type TargetGroupBindingStatus struct {
 	// The generation observed by the TargetGroupBinding controller.
 	// +optional
 	ObservedGeneration *int64 `json:"observedGeneration,omitempty"`
+
+	// Conditions describe the current conditions of the TargetGroupBinding.
+	// +optional
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -161,6 +191,7 @@ type TargetGroupBindingStatus struct {
 // +kubebuilder:printcolumn:name="SERVICE-PORT",type="string",JSONPath=".spec.serviceRef.port",description="The Kubernetes Service's port"
 // +kubebuilder:printcolumn:name="TARGET-TYPE",type="string",JSONPath=".spec.targetType",description="The AWS TargetGroup's TargetType"
 // +kubebuilder:printcolumn:name="ARN",type="string",JSONPath=".spec.targetGroupARN",description="The AWS TargetGroup's Amazon Resource Name",priority=1
+// +kubebuilder:printcolumn:name="NAME",type="string",JSONPath=".spec.targetGroupName",description="The AWS TargetGroup's Name",priority=2
 // +kubebuilder:printcolumn:name="AGE",type="date",JSONPath=".metadata.creationTimestamp"
 // TargetGroupBinding is the Schema for the TargetGroupBinding API
 type TargetGroupBinding struct {

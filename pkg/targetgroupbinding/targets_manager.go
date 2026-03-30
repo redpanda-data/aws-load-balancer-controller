@@ -2,31 +2,36 @@ package targetgroupbinding
 
 import (
 	"context"
-	"github.com/aws/aws-sdk-go/aws"
-	elbv2sdk "github.com/aws/aws-sdk-go/service/elbv2"
-	"github.com/go-logr/logr"
-	"k8s.io/apimachinery/pkg/util/cache"
-	"sigs.k8s.io/aws-load-balancer-controller/pkg/aws/services"
 	"sync"
 	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	elbv2sdk "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2"
+	elbv2types "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2/types"
+	"github.com/go-logr/logr"
+	"k8s.io/apimachinery/pkg/util/cache"
+	elbv2api "sigs.k8s.io/aws-load-balancer-controller/apis/elbv2/v1beta1"
+	"sigs.k8s.io/aws-load-balancer-controller/pkg/aws/services"
 )
 
 const (
 	defaultTargetsCacheTTL            = 5 * time.Minute
 	defaultRegisterTargetsChunkSize   = 200
 	defaultDeregisterTargetsChunkSize = 200
+	defaultNeedsPodAZCacheTTL         = 60 * time.Minute
+	defaultNodeAZCacheTTL             = 60 * time.Minute
 )
 
 // TargetsManager is an abstraction around ELBV2's targets API.
 type TargetsManager interface {
 	// Register Targets into TargetGroup.
-	RegisterTargets(ctx context.Context, tgARN string, targets []elbv2sdk.TargetDescription) error
+	RegisterTargets(ctx context.Context, tgb *elbv2api.TargetGroupBinding, targets []elbv2types.TargetDescription) error
 
 	// Deregister Targets from TargetGroup.
-	DeregisterTargets(ctx context.Context, tgARN string, targets []elbv2sdk.TargetDescription) error
+	DeregisterTargets(ctx context.Context, tgb *elbv2api.TargetGroupBinding, targets []elbv2types.TargetDescription) error
 
 	// List Targets from TargetGroup.
-	ListTargets(ctx context.Context, tgARN string) ([]TargetInfo, error)
+	ListTargets(ctx context.Context, tgb *elbv2api.TargetGroupBinding) ([]TargetInfo, error)
 }
 
 // NewCachedTargetsManager constructs new cachedTargetsManager
@@ -75,49 +80,64 @@ type targetsCacheItem struct {
 	targets []TargetInfo
 }
 
-func (m *cachedTargetsManager) RegisterTargets(ctx context.Context, tgARN string, targets []elbv2sdk.TargetDescription) error {
+func (m *cachedTargetsManager) RegisterTargets(ctx context.Context, tgb *elbv2api.TargetGroupBinding, targets []elbv2types.TargetDescription) error {
+	tgARN := tgb.Spec.TargetGroupARN
 	targetsChunks := chunkTargetDescriptions(targets, m.registerTargetsChunkSize)
 	for _, targetsChunk := range targetsChunks {
 		req := &elbv2sdk.RegisterTargetsInput{
 			TargetGroupArn: aws.String(tgARN),
-			Targets:        pointerizeTargetDescriptions(targetsChunk),
+			Targets:        cloneTargetDescriptionSlice(targetsChunk),
 		}
 		m.logger.Info("registering targets",
 			"arn", tgARN,
 			"targets", targetsChunk)
-		_, err := m.elbv2Client.RegisterTargetsWithContext(ctx, req)
+
+		clientToUse, err := m.elbv2Client.AssumeRole(ctx, tgb.Spec.IamRoleArnToAssume, tgb.Spec.AssumeRoleExternalId)
+		if err != nil {
+			return err
+		}
+
+		_, err = clientToUse.RegisterTargetsWithContext(ctx, req)
 		if err != nil {
 			return err
 		}
 		m.logger.Info("registered targets",
-			"arn", tgARN)
+			"arn", tgARN,
+			"targets", targetsChunk)
 		m.recordSuccessfulRegisterTargetsOperation(tgARN, targetsChunk)
 	}
 	return nil
 }
 
-func (m *cachedTargetsManager) DeregisterTargets(ctx context.Context, tgARN string, targets []elbv2sdk.TargetDescription) error {
+func (m *cachedTargetsManager) DeregisterTargets(ctx context.Context, tgb *elbv2api.TargetGroupBinding, targets []elbv2types.TargetDescription) error {
+	tgARN := tgb.Spec.TargetGroupARN
 	targetsChunks := chunkTargetDescriptions(targets, m.deregisterTargetsChunkSize)
 	for _, targetsChunk := range targetsChunks {
 		req := &elbv2sdk.DeregisterTargetsInput{
 			TargetGroupArn: aws.String(tgARN),
-			Targets:        pointerizeTargetDescriptions(targetsChunk),
+			Targets:        cloneTargetDescriptionSlice(targetsChunk),
 		}
 		m.logger.Info("deRegistering targets",
 			"arn", tgARN,
 			"targets", targetsChunk)
-		_, err := m.elbv2Client.DeregisterTargetsWithContext(ctx, req)
+		clientToUse, err := m.elbv2Client.AssumeRole(ctx, tgb.Spec.IamRoleArnToAssume, tgb.Spec.AssumeRoleExternalId)
+		if err != nil {
+			return err
+		}
+		_, err = clientToUse.DeregisterTargetsWithContext(ctx, req)
 		if err != nil {
 			return err
 		}
 		m.logger.Info("deRegistered targets",
-			"arn", tgARN)
+			"arn", tgARN,
+			"targets", targetsChunk)
 		m.recordSuccessfulDeregisterTargetsOperation(tgARN, targetsChunk)
 	}
 	return nil
 }
 
-func (m *cachedTargetsManager) ListTargets(ctx context.Context, tgARN string) ([]TargetInfo, error) {
+func (m *cachedTargetsManager) ListTargets(ctx context.Context, tgb *elbv2api.TargetGroupBinding) ([]TargetInfo, error) {
+	tgARN := tgb.Spec.TargetGroupARN
 	m.targetsCacheMutex.Lock()
 	defer m.targetsCacheMutex.Unlock()
 
@@ -125,7 +145,7 @@ func (m *cachedTargetsManager) ListTargets(ctx context.Context, tgARN string) ([
 		targetsCacheItem := rawTargetsCacheItem.(*targetsCacheItem)
 		targetsCacheItem.mutex.Lock()
 		defer targetsCacheItem.mutex.Unlock()
-		refreshedTargets, err := m.refreshUnhealthyTargets(ctx, tgARN, targetsCacheItem.targets)
+		refreshedTargets, err := m.refreshUnhealthyTargets(ctx, tgb, targetsCacheItem.targets)
 		if err != nil {
 			return nil, err
 		}
@@ -133,7 +153,7 @@ func (m *cachedTargetsManager) ListTargets(ctx context.Context, tgARN string) ([
 		return cloneTargetInfoSlice(refreshedTargets), nil
 	}
 
-	refreshedTargets, err := m.refreshAllTargets(ctx, tgARN)
+	refreshedTargets, err := m.refreshAllTargets(ctx, tgb)
 	if err != nil {
 		return nil, err
 	}
@@ -146,8 +166,8 @@ func (m *cachedTargetsManager) ListTargets(ctx context.Context, tgARN string) ([
 }
 
 // refreshAllTargets will refresh all targets for targetGroup.
-func (m *cachedTargetsManager) refreshAllTargets(ctx context.Context, tgARN string) ([]TargetInfo, error) {
-	targets, err := m.listTargetsFromAWS(ctx, tgARN, nil)
+func (m *cachedTargetsManager) refreshAllTargets(ctx context.Context, tgb *elbv2api.TargetGroupBinding) ([]TargetInfo, error) {
+	targets, err := m.listTargetsFromAWS(ctx, tgb, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -157,9 +177,9 @@ func (m *cachedTargetsManager) refreshAllTargets(ctx context.Context, tgARN stri
 // refreshUnhealthyTargets will refresh targets that are not in healthy status for targetGroup.
 // To save API calls, we don't refresh targets that are already healthy since once a target turns healthy, we'll unblock it's readinessProbe.
 // we can do nothing from controller perspective when a healthy target becomes unhealthy.
-func (m *cachedTargetsManager) refreshUnhealthyTargets(ctx context.Context, tgARN string, cachedTargets []TargetInfo) ([]TargetInfo, error) {
+func (m *cachedTargetsManager) refreshUnhealthyTargets(ctx context.Context, tgb *elbv2api.TargetGroupBinding, cachedTargets []TargetInfo) ([]TargetInfo, error) {
 	var refreshedTargets []TargetInfo
-	var unhealthyTargets []elbv2sdk.TargetDescription
+	var unhealthyTargets []elbv2types.TargetDescription
 	for _, cachedTarget := range cachedTargets {
 		if cachedTarget.IsHealthy() {
 			refreshedTargets = append(refreshedTargets, cachedTarget)
@@ -171,7 +191,7 @@ func (m *cachedTargetsManager) refreshUnhealthyTargets(ctx context.Context, tgAR
 		return refreshedTargets, nil
 	}
 
-	refreshedUnhealthyTargets, err := m.listTargetsFromAWS(ctx, tgARN, unhealthyTargets)
+	refreshedUnhealthyTargets, err := m.listTargetsFromAWS(ctx, tgb, unhealthyTargets)
 	if err != nil {
 		return nil, err
 	}
@@ -187,12 +207,17 @@ func (m *cachedTargetsManager) refreshUnhealthyTargets(ctx context.Context, tgAR
 // listTargetsFromAWS will list targets for TargetGroup using ELBV2API.
 // if specified targets is non-empty, only these targets will be listed.
 // otherwise, all targets for targetGroup will be listed.
-func (m *cachedTargetsManager) listTargetsFromAWS(ctx context.Context, tgARN string, targets []elbv2sdk.TargetDescription) ([]TargetInfo, error) {
+func (m *cachedTargetsManager) listTargetsFromAWS(ctx context.Context, tgb *elbv2api.TargetGroupBinding, targets []elbv2types.TargetDescription) ([]TargetInfo, error) {
+	tgARN := tgb.Spec.TargetGroupARN
 	req := &elbv2sdk.DescribeTargetHealthInput{
 		TargetGroupArn: aws.String(tgARN),
-		Targets:        pointerizeTargetDescriptions(targets),
+		Targets:        targetByIdPort(targets),
 	}
-	resp, err := m.elbv2Client.DescribeTargetHealthWithContext(ctx, req)
+	clientToUse, err := m.elbv2Client.AssumeRole(ctx, tgb.Spec.IamRoleArnToAssume, tgb.Spec.AssumeRoleExternalId)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := clientToUse.DescribeTargetHealthWithContext(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -208,7 +233,7 @@ func (m *cachedTargetsManager) listTargetsFromAWS(ctx context.Context, tgARN str
 }
 
 // recordSuccessfulRegisterTargetsOperation will record a successful deregisterTarget operation
-func (m *cachedTargetsManager) recordSuccessfulRegisterTargetsOperation(tgARN string, targets []elbv2sdk.TargetDescription) {
+func (m *cachedTargetsManager) recordSuccessfulRegisterTargetsOperation(tgARN string, targets []elbv2types.TargetDescription) {
 	m.targetsCacheMutex.RLock()
 	rawTargetsCacheItem, exists := m.targetsCache.Get(tgARN)
 	m.targetsCacheMutex.RUnlock()
@@ -216,7 +241,7 @@ func (m *cachedTargetsManager) recordSuccessfulRegisterTargetsOperation(tgARN st
 	if !exists {
 		return
 	}
-	targetsByUniqueID := make(map[string]elbv2sdk.TargetDescription, len(targets))
+	targetsByUniqueID := make(map[string]elbv2types.TargetDescription, len(targets))
 	for _, target := range targets {
 		targetsByUniqueID[UniqueIDForTargetDescription(target)] = target
 	}
@@ -241,7 +266,7 @@ func (m *cachedTargetsManager) recordSuccessfulRegisterTargetsOperation(tgARN st
 }
 
 // recordSuccessfulDeregisterTargetsOperation will record a successful deregisterTarget operation
-func (m *cachedTargetsManager) recordSuccessfulDeregisterTargetsOperation(tgARN string, targets []elbv2sdk.TargetDescription) {
+func (m *cachedTargetsManager) recordSuccessfulDeregisterTargetsOperation(tgARN string, targets []elbv2types.TargetDescription) {
 	m.targetsCacheMutex.RLock()
 	rawTargetsCacheItem, exists := m.targetsCache.Get(tgARN)
 	m.targetsCacheMutex.RUnlock()
@@ -249,7 +274,7 @@ func (m *cachedTargetsManager) recordSuccessfulDeregisterTargetsOperation(tgARN 
 	if !exists {
 		return
 	}
-	targetsByUniqueID := make(map[string]elbv2sdk.TargetDescription, len(targets))
+	targetsByUniqueID := make(map[string]elbv2types.TargetDescription, len(targets))
 	for _, target := range targets {
 		targetsByUniqueID[UniqueIDForTargetDescription(target)] = target
 	}
@@ -267,8 +292,8 @@ func (m *cachedTargetsManager) recordSuccessfulDeregisterTargetsOperation(tgARN 
 }
 
 // chunkTargetDescriptions will split slice of TargetDescription into chunks
-func chunkTargetDescriptions(targets []elbv2sdk.TargetDescription, chunkSize int) [][]elbv2sdk.TargetDescription {
-	var chunks [][]elbv2sdk.TargetDescription
+func chunkTargetDescriptions(targets []elbv2types.TargetDescription, chunkSize int) [][]elbv2types.TargetDescription {
+	var chunks [][]elbv2types.TargetDescription
 	for i := 0; i < len(targets); i += chunkSize {
 		end := i + chunkSize
 		if end > len(targets) {
@@ -279,15 +304,30 @@ func chunkTargetDescriptions(targets []elbv2sdk.TargetDescription, chunkSize int
 	return chunks
 }
 
-// pointerizeTargetDescriptions converts slice of TargetDescription into slice of pointers to TargetDescription
-// if targets is empty or nil, nil will be returned.
-func pointerizeTargetDescriptions(targets []elbv2sdk.TargetDescription) []*elbv2sdk.TargetDescription {
+// targetByIdPort returns targets with only Id and Port fields.
+// Omitting AZ ensures DescribeTargetHealth finds targets regardless of cached AZ state.
+func targetByIdPort(targets []elbv2types.TargetDescription) []elbv2types.TargetDescription {
 	if len(targets) == 0 {
 		return nil
 	}
-	result := make([]*elbv2sdk.TargetDescription, 0, len(targets))
+	result := make([]elbv2types.TargetDescription, 0, len(targets))
+	for _, t := range targets {
+		result = append(result, elbv2types.TargetDescription{
+			Id:   t.Id,
+			Port: t.Port,
+		})
+	}
+	return result
+}
+
+// cloneTargetDescriptionSlice returns a shallow copy of the TargetDescription slice.
+func cloneTargetDescriptionSlice(targets []elbv2types.TargetDescription) []elbv2types.TargetDescription {
+	if len(targets) == 0 {
+		return nil
+	}
+	result := make([]elbv2types.TargetDescription, 0, len(targets))
 	for i := range targets {
-		result = append(result, &targets[i])
+		result = append(result, targets[i])
 	}
 	return result
 }

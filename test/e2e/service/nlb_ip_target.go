@@ -4,24 +4,21 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"net/http"
+	"time"
+
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	"net/http"
 	"sigs.k8s.io/aws-load-balancer-controller/test/framework"
 	"sigs.k8s.io/aws-load-balancer-controller/test/framework/utils"
-	"time"
-)
-
-const (
-	ResourceTypeELBLoadBalancer = "elasticloadbalancing:loadbalancer"
 )
 
 type NLBIPTestStack struct {
-	resourceStack *resourceStack
+	resourceStack *ResourceStack
 }
 
-func (s *NLBIPTestStack) Deploy(ctx context.Context, f *framework.Framework, svc *corev1.Service, dp *appsv1.Deployment) error {
-	s.resourceStack = NewResourceStack(dp, svc, "service-ip-e2e", false)
+func (s *NLBIPTestStack) Deploy(ctx context.Context, f *framework.Framework, svc *corev1.Service, dp *appsv1.Deployment, lbTypeSvcs []*corev1.Service, nonLbTypeSvcs []*corev1.Service, namespaceLabels map[string]string) error {
+	s.resourceStack = NewResourceStack(dp, svc, lbTypeSvcs, nonLbTypeSvcs, "service-ip-e2e", namespaceLabels)
 	return s.resourceStack.Deploy(ctx, f)
 }
 

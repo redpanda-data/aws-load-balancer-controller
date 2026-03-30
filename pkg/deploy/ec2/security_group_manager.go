@@ -2,9 +2,10 @@ package ec2
 
 import (
 	"context"
-	awssdk "github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/awserr"
-	ec2sdk "github.com/aws/aws-sdk-go/service/ec2"
+	awssdk "github.com/aws/aws-sdk-go-v2/aws"
+	ec2sdk "github.com/aws/aws-sdk-go-v2/service/ec2"
+	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/aws/smithy-go"
 	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/aws/services"
@@ -12,12 +13,13 @@ import (
 	ec2model "sigs.k8s.io/aws-load-balancer-controller/pkg/model/ec2"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/networking"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/runtime"
+	"sync"
 	"time"
 )
 
 const (
 	defaultWaitSGDeletionPollInterval = 2 * time.Second
-	defaultWaitSGDeletionTimeout      = 2 * time.Minute
+	defaultWaitSGDeletionTimeout      = 10 * time.Second
 )
 
 // SecurityGroupManager is responsible for create/update/delete SecurityGroup resources.
@@ -30,10 +32,11 @@ type SecurityGroupManager interface {
 }
 
 // NewDefaultSecurityGroupManager constructs new defaultSecurityGroupManager.
-func NewDefaultSecurityGroupManager(ec2Client services.EC2, trackingProvider tracking.Provider, taggingManager TaggingManager,
+func NewDefaultSecurityGroupManager(ec2Client services.EC2, networkingManager networking.NetworkingManager, trackingProvider tracking.Provider, taggingManager TaggingManager,
 	networkingSGReconciler networking.SecurityGroupReconciler, vpcID string, externalManagedTags []string, logger logr.Logger) *defaultSecurityGroupManager {
 	return &defaultSecurityGroupManager{
 		ec2Client:              ec2Client,
+		networkingManager:      networkingManager,
 		trackingProvider:       trackingProvider,
 		taggingManager:         taggingManager,
 		networkingSGReconciler: networkingSGReconciler,
@@ -49,6 +52,7 @@ func NewDefaultSecurityGroupManager(ec2Client services.EC2, trackingProvider tra
 // default implementation for SecurityGroupManager.
 type defaultSecurityGroupManager struct {
 	ec2Client              services.EC2
+	networkingManager      networking.NetworkingManager
 	trackingProvider       tracking.Provider
 	taggingManager         TaggingManager
 	networkingSGReconciler networking.SecurityGroupReconciler
@@ -72,9 +76,9 @@ func (m *defaultSecurityGroupManager) Create(ctx context.Context, resSG *ec2mode
 		VpcId:       awssdk.String(m.vpcID),
 		GroupName:   awssdk.String(resSG.Spec.GroupName),
 		Description: awssdk.String(resSG.Spec.Description),
-		TagSpecifications: []*ec2sdk.TagSpecification{
+		TagSpecifications: []ec2types.TagSpecification{
 			{
-				ResourceType: awssdk.String("security-group"),
+				ResourceType: "security-group",
 				Tags:         sdkTags,
 			},
 		},
@@ -85,7 +89,7 @@ func (m *defaultSecurityGroupManager) Create(ctx context.Context, resSG *ec2mode
 	if err != nil {
 		return ec2model.SecurityGroupStatus{}, err
 	}
-	sgID := awssdk.StringValue(resp.GroupId)
+	sgID := awssdk.ToString(resp.GroupId)
 	m.logger.Info("created securityGroup",
 		"resourceID", resSG.ID(),
 		"securityGroupID", sgID)
@@ -122,8 +126,17 @@ func (m *defaultSecurityGroupManager) Delete(ctx context.Context, sdkSG networki
 
 	m.logger.Info("deleting securityGroup",
 		"securityGroupID", sdkSG.SecurityGroupID)
+
+	var once sync.Once
+	cleanUpFunction := func() {
+		m.networkingManager.AttemptGarbageCollection(ctx)
+	}
+
 	if err := runtime.RetryImmediateOnError(m.waitSGDeletionPollInterval, m.waitSGDeletionTimeout, isSecurityGroupDependencyViolationError, func() error {
 		_, err := m.ec2Client.DeleteSecurityGroupWithContext(ctx, req)
+		if err != nil && isSecurityGroupDependencyViolationError(err) {
+			once.Do(cleanUpFunction)
+		}
 		return err
 	}); err != nil {
 		return errors.Wrap(err, "failed to delete securityGroup")
@@ -168,13 +181,17 @@ func buildIPPermissionInfo(permission ec2model.IPPermission) (networking.IPPermi
 		labels := networking.NewIPPermissionLabelsForRawDescription(permission.UserIDGroupPairs[0].Description)
 		return networking.NewGroupIDIPPermission(protocol, permission.FromPort, permission.ToPort, permission.UserIDGroupPairs[0].GroupID, labels), nil
 	}
+	if len(permission.PrefixLists) == 1 {
+		labels := networking.NewIPPermissionLabelsForRawDescription(permission.PrefixLists[0].Description)
+		return networking.NewPrefixListIDPermission(protocol, permission.FromPort, permission.ToPort, permission.PrefixLists[0].ListID, labels), nil
+	}
 	return networking.IPPermissionInfo{}, errors.New("invalid ipPermission")
 }
 
 func isSecurityGroupDependencyViolationError(err error) bool {
-	var awsErr awserr.Error
-	if errors.As(err, &awsErr) {
-		return awsErr.Code() == "DependencyViolation"
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.ErrorCode() == "DependencyViolation"
 	}
 	return false
 }

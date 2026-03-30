@@ -2,7 +2,10 @@ package elbv2
 
 import (
 	"context"
-	awssdk "github.com/aws/aws-sdk-go/aws"
+	awsmetrics "sigs.k8s.io/aws-load-balancer-controller/pkg/metrics/aws"
+	"time"
+
+	awssdk "github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
@@ -11,11 +14,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	elbv2api "sigs.k8s.io/aws-load-balancer-controller/apis/elbv2/v1beta1"
+	"sigs.k8s.io/aws-load-balancer-controller/pkg/algorithm"
+	"sigs.k8s.io/aws-load-balancer-controller/pkg/annotations"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/deploy/tracking"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/k8s"
-	elbv2model "sigs.k8s.io/aws-load-balancer-controller/pkg/model/elbv2"
+	elbv2modelk8s "sigs.k8s.io/aws-load-balancer-controller/pkg/model/elbv2/k8s"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"time"
 )
 
 const (
@@ -27,19 +31,20 @@ const (
 
 // TargetGroupBindingManager is responsible for create/update/delete TargetGroupBinding resources.
 type TargetGroupBindingManager interface {
-	Create(ctx context.Context, resTGB *elbv2model.TargetGroupBindingResource) (elbv2model.TargetGroupBindingResourceStatus, error)
+	Create(ctx context.Context, resTGB *elbv2modelk8s.TargetGroupBindingResource) (elbv2modelk8s.TargetGroupBindingResourceStatus, error)
 
-	Update(ctx context.Context, resTGB *elbv2model.TargetGroupBindingResource, k8sTGB *elbv2api.TargetGroupBinding) (elbv2model.TargetGroupBindingResourceStatus, error)
+	Update(ctx context.Context, resTGB *elbv2modelk8s.TargetGroupBindingResource, k8sTGB *elbv2api.TargetGroupBinding) (elbv2modelk8s.TargetGroupBindingResourceStatus, error)
 
 	Delete(ctx context.Context, k8sTGB *elbv2api.TargetGroupBinding) error
 }
 
 // NewDefaultTargetGroupBindingManager constructs new defaultTargetGroupBindingManager
-func NewDefaultTargetGroupBindingManager(k8sClient client.Client, trackingProvider tracking.Provider, logger logr.Logger) *defaultTargetGroupBindingManager {
+func NewDefaultTargetGroupBindingManager(k8sClient client.Client, trackingProvider tracking.Provider, logger logr.Logger, targetGroupCollector awsmetrics.TargetGroupCollector) *defaultTargetGroupBindingManager {
 	return &defaultTargetGroupBindingManager{
-		k8sClient:        k8sClient,
-		trackingProvider: trackingProvider,
-		logger:           logger,
+		k8sClient:            k8sClient,
+		trackingProvider:     trackingProvider,
+		logger:               logger,
+		targetGroupCollector: targetGroupCollector,
 
 		waitTGBObservedPollInterval: defaultWaitTGBObservedPollInterval,
 		waitTGBObservedTimout:       defaultWaitTGBObservedTimeout,
@@ -52,9 +57,10 @@ var _ TargetGroupBindingManager = &defaultTargetGroupBindingManager{}
 
 // default implementation for TargetGroupBindingManager.
 type defaultTargetGroupBindingManager struct {
-	k8sClient        client.Client
-	trackingProvider tracking.Provider
-	logger           logr.Logger
+	k8sClient            client.Client
+	trackingProvider     tracking.Provider
+	logger               logr.Logger
+	targetGroupCollector awsmetrics.TargetGroupCollector
 
 	waitTGBObservedPollInterval time.Duration
 	waitTGBObservedTimout       time.Duration
@@ -62,18 +68,24 @@ type defaultTargetGroupBindingManager struct {
 	waitTGBDeletionTimeout      time.Duration
 }
 
-func (m *defaultTargetGroupBindingManager) Create(ctx context.Context, resTGB *elbv2model.TargetGroupBindingResource) (elbv2model.TargetGroupBindingResourceStatus, error) {
+func (m *defaultTargetGroupBindingManager) Create(ctx context.Context, resTGB *elbv2modelk8s.TargetGroupBindingResource) (elbv2modelk8s.TargetGroupBindingResourceStatus, error) {
 	k8sTGBSpec, err := buildK8sTargetGroupBindingSpec(ctx, resTGB)
 	if err != nil {
-		return elbv2model.TargetGroupBindingResourceStatus{}, err
+		return elbv2modelk8s.TargetGroupBindingResourceStatus{}, err
 	}
 
-	stackLabels := m.trackingProvider.StackLabels(resTGB.Stack())
+	labels := m.trackingProvider.StackLabels(resTGB.Stack())
+
+	if resTGB.Spec.Template.Labels != nil {
+		labels = algorithm.MergeStringMap(labels, resTGB.Spec.Template.Labels)
+	}
+
 	k8sTGB := &elbv2api.TargetGroupBinding{
 		ObjectMeta: metav1.ObjectMeta{
-			Namespace: resTGB.Spec.Template.Namespace,
-			Name:      resTGB.Spec.Template.Name,
-			Labels:    stackLabels,
+			Namespace:   resTGB.Spec.Template.Namespace,
+			Name:        resTGB.Spec.Template.Name,
+			Annotations: resTGB.Spec.Template.Annotations,
+			Labels:      labels,
 		},
 		Spec: k8sTGBSpec,
 	}
@@ -82,40 +94,58 @@ func (m *defaultTargetGroupBindingManager) Create(ctx context.Context, resTGB *e
 		"stackID", resTGB.Stack().StackID(),
 		"resourceID", resTGB.ID())
 	if err := m.k8sClient.Create(ctx, k8sTGB); err != nil {
-		return elbv2model.TargetGroupBindingResourceStatus{}, err
+		return elbv2modelk8s.TargetGroupBindingResourceStatus{}, err
 	}
 	m.logger.Info("created targetGroupBinding",
 		"stackID", resTGB.Stack().StackID(),
 		"resourceID", resTGB.ID(),
 		"targetGroupBinding", k8s.NamespacedName(k8sTGB))
+	m.targetGroupCollector.RegisterTargetGroupBinding(k8sTGB)
 	return buildResTargetGroupBindingStatus(k8sTGB), nil
 }
 
-func (m *defaultTargetGroupBindingManager) Update(ctx context.Context, resTGB *elbv2model.TargetGroupBindingResource, k8sTGB *elbv2api.TargetGroupBinding) (elbv2model.TargetGroupBindingResourceStatus, error) {
+func (m *defaultTargetGroupBindingManager) Update(ctx context.Context, resTGB *elbv2modelk8s.TargetGroupBindingResource, k8sTGB *elbv2api.TargetGroupBinding) (elbv2modelk8s.TargetGroupBindingResourceStatus, error) {
 	k8sTGBSpec, err := buildK8sTargetGroupBindingSpec(ctx, resTGB)
 	if err != nil {
-		return elbv2model.TargetGroupBindingResourceStatus{}, err
+		return elbv2modelk8s.TargetGroupBindingResourceStatus{}, err
 	}
-	if equality.Semantic.DeepEqual(k8sTGB.Spec, k8sTGBSpec) {
+
+	m.targetGroupCollector.RegisterTargetGroupBinding(k8sTGB)
+
+	calculatedLabels := m.trackingProvider.StackLabels(resTGB.Stack())
+
+	if resTGB.Spec.Template.Labels != nil {
+		calculatedLabels = algorithm.MergeStringMap(calculatedLabels, resTGB.Spec.Template.Labels)
+	}
+
+	specSame := equality.Semantic.DeepEqual(k8sTGB.Spec, k8sTGBSpec)
+	labelsSame := equality.Semantic.DeepEqual(k8sTGB.Labels, calculatedLabels)
+	annotationsSame := tgbAnnotationsSame(resTGB, k8sTGB)
+
+	if specSame && labelsSame && annotationsSame {
 		return buildResTargetGroupBindingStatus(k8sTGB), nil
 	}
 
 	oldK8sTGB := k8sTGB.DeepCopy()
 	k8sTGB.Spec = k8sTGBSpec
+	k8sTGB.Annotations = resTGB.Spec.Template.Annotations
+	k8sTGB.Labels = calculatedLabels
 	m.logger.Info("modifying targetGroupBinding",
 		"stackID", resTGB.Stack().StackID(),
 		"resourceID", resTGB.ID(),
 		"targetGroupBinding", k8s.NamespacedName(k8sTGB))
+
 	if err := m.k8sClient.Patch(ctx, k8sTGB, client.MergeFrom(oldK8sTGB)); err != nil {
-		return elbv2model.TargetGroupBindingResourceStatus{}, err
+		return elbv2modelk8s.TargetGroupBindingResourceStatus{}, err
 	}
 	if err := m.waitUntilTargetGroupBindingObserved(ctx, k8sTGB); err != nil {
-		return elbv2model.TargetGroupBindingResourceStatus{}, err
+		return elbv2modelk8s.TargetGroupBindingResourceStatus{}, err
 	}
 	m.logger.Info("modified targetGroupBinding",
 		"stackID", resTGB.Stack().StackID(),
 		"resourceID", resTGB.ID(),
 		"targetGroupBinding", k8s.NamespacedName(k8sTGB))
+
 	return buildResTargetGroupBindingStatus(k8sTGB), nil
 }
 
@@ -130,6 +160,7 @@ func (m *defaultTargetGroupBindingManager) Delete(ctx context.Context, tgb *elbv
 	}
 	m.logger.Info("deleted targetGroupBinding",
 		"targetGroupBinding", k8s.NamespacedName(tgb))
+	m.targetGroupCollector.DeRegisterTargetGroupBinding(tgb)
 	return nil
 }
 
@@ -142,7 +173,7 @@ func (m *defaultTargetGroupBindingManager) waitUntilTargetGroupBindingObserved(c
 		if err := m.k8sClient.Get(ctx, k8s.NamespacedName(tgb), observedTGB); err != nil {
 			return false, err
 		}
-		if awssdk.Int64Value(observedTGB.Status.ObservedGeneration) >= tgb.Generation {
+		if awssdk.ToInt64(observedTGB.Status.ObservedGeneration) >= tgb.Generation {
 			return true, nil
 		}
 
@@ -166,16 +197,17 @@ func (m *defaultTargetGroupBindingManager) waitUntilTargetGroupBindingDeleted(ct
 	}, ctx.Done())
 }
 
-func buildK8sTargetGroupBindingSpec(ctx context.Context, resTGB *elbv2model.TargetGroupBindingResource) (elbv2api.TargetGroupBindingSpec, error) {
+func buildK8sTargetGroupBindingSpec(ctx context.Context, resTGB *elbv2modelk8s.TargetGroupBindingResource) (elbv2api.TargetGroupBindingSpec, error) {
 	tgARN, err := resTGB.Spec.Template.Spec.TargetGroupARN.Resolve(ctx)
 	if err != nil {
 		return elbv2api.TargetGroupBindingSpec{}, err
 	}
 
 	k8sTGBSpec := elbv2api.TargetGroupBindingSpec{
-		TargetGroupARN: tgARN,
-		TargetType:     resTGB.Spec.Template.Spec.TargetType,
-		ServiceRef:     resTGB.Spec.Template.Spec.ServiceRef,
+		TargetGroupARN:      tgARN,
+		TargetType:          resTGB.Spec.Template.Spec.TargetType,
+		TargetGroupProtocol: resTGB.Spec.Template.Spec.TargetGroupProtocol,
+		ServiceRef:          resTGB.Spec.Template.Spec.ServiceRef,
 	}
 
 	if resTGB.Spec.Template.Spec.Networking != nil {
@@ -186,11 +218,13 @@ func buildK8sTargetGroupBindingSpec(ctx context.Context, resTGB *elbv2model.Targ
 		k8sTGBSpec.Networking = &k8sTGBNetworking
 	}
 	k8sTGBSpec.NodeSelector = resTGB.Spec.Template.Spec.NodeSelector
-	k8sTGBSpec.IPAddressType = resTGB.Spec.Template.Spec.IPAddressType
+	k8sTGBSpec.IPAddressType = &resTGB.Spec.Template.Spec.IPAddressType
+	k8sTGBSpec.VpcID = resTGB.Spec.Template.Spec.VpcID
+	k8sTGBSpec.MultiClusterTargetGroup = resTGB.Spec.Template.Spec.MultiClusterTargetGroup
 	return k8sTGBSpec, nil
 }
 
-func buildK8sTargetGroupBindingNetworking(ctx context.Context, resTGBNetworking elbv2model.TargetGroupBindingNetworking) (elbv2api.TargetGroupBindingNetworking, error) {
+func buildK8sTargetGroupBindingNetworking(ctx context.Context, resTGBNetworking elbv2modelk8s.TargetGroupBindingNetworking) (elbv2api.TargetGroupBindingNetworking, error) {
 	k8sIngress := make([]elbv2api.NetworkingIngressRule, 0, len(resTGBNetworking.Ingress))
 	for _, rule := range resTGBNetworking.Ingress {
 		k8sPeers := make([]elbv2api.NetworkingPeer, 0, len(rule.From))
@@ -211,7 +245,7 @@ func buildK8sTargetGroupBindingNetworking(ctx context.Context, resTGBNetworking 
 	}, nil
 }
 
-func buildK8sNetworkingPeer(ctx context.Context, resNetworkingPeer elbv2model.NetworkingPeer) (elbv2api.NetworkingPeer, error) {
+func buildK8sNetworkingPeer(ctx context.Context, resNetworkingPeer elbv2modelk8s.NetworkingPeer) (elbv2api.NetworkingPeer, error) {
 	if resNetworkingPeer.IPBlock != nil {
 		return elbv2api.NetworkingPeer{
 			IPBlock: resNetworkingPeer.IPBlock,
@@ -231,12 +265,26 @@ func buildK8sNetworkingPeer(ctx context.Context, resNetworkingPeer elbv2model.Ne
 	return elbv2api.NetworkingPeer{}, errors.New("either ipBlock or securityGroup should be specified")
 }
 
-func buildResTargetGroupBindingStatus(k8sTGB *elbv2api.TargetGroupBinding) elbv2model.TargetGroupBindingResourceStatus {
-	return elbv2model.TargetGroupBindingResourceStatus{
+func buildResTargetGroupBindingStatus(k8sTGB *elbv2api.TargetGroupBinding) elbv2modelk8s.TargetGroupBindingResourceStatus {
+	return elbv2modelk8s.TargetGroupBindingResourceStatus{
 		TargetGroupBindingRef: corev1.ObjectReference{
 			Namespace: k8sTGB.Namespace,
 			Name:      k8sTGB.Name,
 			UID:       k8sTGB.UID,
 		},
 	}
+}
+
+// tgbAnnotationsSame performs map equality with the two sets of annotations. Will ignore the check point annotations inserted by the TGB reconciler.
+func tgbAnnotationsSame(resTGB *elbv2modelk8s.TargetGroupBindingResource, k8sTGB *elbv2api.TargetGroupBinding) bool {
+	annotationsNoCheckpoint := make(map[string]string)
+
+	if k8sTGB.Annotations != nil {
+		for k, v := range k8sTGB.Annotations {
+			if k != annotations.AnnotationCheckPointTimestamp && k != annotations.AnnotationCheckPoint {
+				annotationsNoCheckpoint[k] = v
+			}
+		}
+	}
+	return equality.Semantic.DeepEqual(annotationsNoCheckpoint, resTGB.Spec.Template.Annotations)
 }

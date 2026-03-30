@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"sigs.k8s.io/aws-load-balancer-controller/pkg/shared_constants"
 	"sort"
 	"strings"
 
@@ -16,9 +17,9 @@ import (
 )
 
 const (
-	defaultGroupOrder  int64 = 0
-	minGroupOrder      int64 = -1000
-	maxGroupOder       int64 = 1000
+	defaultGroupOrder  int32 = 0
+	minGroupOrder      int32 = -1000
+	maxGroupOder       int32 = 1000
 	maxGroupNameLength int   = 63
 )
 
@@ -81,15 +82,10 @@ func (m *defaultGroupLoader) Load(ctx context.Context, groupID GroupID) (Group, 
 	if err := m.client.List(ctx, ingList); err != nil {
 		return Group{}, err
 	}
-
 	var members []ClassifiedIngress
 	var inactiveMembers []*networking.Ingress
 	for index := range ingList.Items {
 		ing := &ingList.Items[index]
-		if ing.DeletionTimestamp != nil {
-			// It is being deleted.
-			continue
-		}
 		membershipType, classifiedIng, err := m.checkGroupMembershipType(ctx, groupID, ing)
 		if err != nil {
 			return Group{}, errors.Wrapf(err, "Ingress: %v", k8s.NamespacedName(ing))
@@ -122,10 +118,10 @@ func (m *defaultGroupLoader) LoadGroupIDIfAny(ctx context.Context, ing *networki
 func (m *defaultGroupLoader) LoadGroupIDsPendingFinalization(_ context.Context, ing *networking.Ingress) []GroupID {
 	var groupIDs []GroupID
 	for _, finalizer := range ing.GetFinalizers() {
-		if finalizer == implicitGroupFinalizer {
+		if finalizer == shared_constants.ImplicitGroupFinalizer {
 			groupIDs = append(groupIDs, NewGroupIDForImplicitGroup(k8s.NamespacedName(ing)))
-		} else if strings.HasPrefix(finalizer, explicitGroupFinalizerPrefix) {
-			groupName := finalizer[len(explicitGroupFinalizerPrefix):]
+		} else if strings.HasPrefix(finalizer, shared_constants.ExplicitGroupFinalizerPrefix) {
+			groupName := finalizer[len(shared_constants.ExplicitGroupFinalizerPrefix):]
 			groupIDs = append(groupIDs, NewGroupIDForExplicitGroup(groupName))
 		}
 	}
@@ -212,30 +208,24 @@ func (m *defaultGroupLoader) classifyIngress(ctx context.Context, ing *networkin
 		}, false, nil
 	}
 
-	if ing.Spec.IngressClassName != nil {
-		ingClassConfig, err := m.classLoader.Load(ctx, ing)
-		if err != nil {
-			return ClassifiedIngress{
-				Ing:            ing,
-				IngClassConfig: ClassConfiguration{},
-			}, false, err
-		}
+	ingClassConfig, err := m.classLoader.Load(ctx, ing)
+	if err != nil {
+		return ClassifiedIngress{
+			Ing:            ing,
+			IngClassConfig: ClassConfiguration{},
+		}, false, err
+	}
 
-		if matchesIngressClass := ingClassConfig.IngClass != nil && ingClassConfig.IngClass.Spec.Controller == ingressClassControllerALB; matchesIngressClass {
-			return ClassifiedIngress{
-				Ing:            ing,
-				IngClassConfig: ingClassConfig,
-			}, true, nil
-		}
+	if ingClassConfig.IngClass != nil {
 		return ClassifiedIngress{
 			Ing:            ing,
 			IngClassConfig: ingClassConfig,
-		}, false, nil
+		}, ingClassConfig.IngClass.Spec.Controller == IngressClassControllerALB, nil
 	}
 
 	return ClassifiedIngress{
 		Ing:            ing,
-		IngClassConfig: ClassConfiguration{},
+		IngClassConfig: ingClassConfig,
 	}, m.manageIngressesWithoutIngressClass, nil
 }
 
@@ -275,7 +265,7 @@ func (m *defaultGroupLoader) containsGroupFinalizer(groupID GroupID, finalizer s
 
 type groupMemberWithOrder struct {
 	member ClassifiedIngress
-	order  int64
+	order  int32
 }
 
 // sortGroupMembers will sort Ingresses within Ingress group in ascending order.
@@ -291,7 +281,7 @@ func (m *defaultGroupLoader) sortGroupMembers(members []ClassifiedIngress) ([]Cl
 	groupMemberWithOrderList := make([]groupMemberWithOrder, 0, len(members))
 	for _, member := range members {
 		var order = defaultGroupOrder
-		exists, err := m.annotationParser.ParseInt64Annotation(annotations.IngressSuffixGroupOrder, &order, member.Ing.Annotations)
+		exists, err := m.annotationParser.ParseInt32Annotation(annotations.IngressSuffixGroupOrder, &order, member.Ing.Annotations)
 		if err != nil {
 			return nil, errors.Wrapf(err, "failed to load Ingress group order for ingress: %v", k8s.NamespacedName(member.Ing))
 		}

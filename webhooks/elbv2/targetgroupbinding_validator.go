@@ -2,39 +2,59 @@ package elbv2
 
 import (
 	"context"
+	"fmt"
+	"regexp"
+	"sigs.k8s.io/aws-load-balancer-controller/pkg/model/elbv2"
 	"strings"
+	"sync"
 
-	awssdk "github.com/aws/aws-sdk-go/aws"
-	elbv2sdk "github.com/aws/aws-sdk-go/service/elbv2"
+	"k8s.io/apimachinery/pkg/types"
+
+	elbv2types "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2/types"
+
+	awssdk "github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	elbv2api "sigs.k8s.io/aws-load-balancer-controller/apis/elbv2/v1beta1"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/aws/services"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/k8s"
+	lbcmetrics "sigs.k8s.io/aws-load-balancer-controller/pkg/metrics/lbc"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/webhook"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
-const apiPathValidateELBv2TargetGroupBinding = "/validate-elbv2-k8s-aws-v1beta1-targetgroupbinding"
+const (
+	apiPathValidateELBv2TargetGroupBinding = "/validate-elbv2-k8s-aws-v1beta1-targetgroupbinding"
+	vpcIDValidationErr                     = "ValidationError: vpcID %v failed to satisfy constraint: VPC Id must begin with 'vpc-' followed by 8, 17 or 32 lowercase letters (a-f) or numbers."
+	vpcIDNotMatchErr                       = "invalid VpcID %v doesnt match VpcID from TargetGroup %v"
+	tgProtocolMismatch                     = "TargetGroup %v protocol differs (got %v, expected %v)"
+	quicInstanceNotSupported               = "QUIC protocol is not supported for Instance target types."
+)
 
-// NewTargetGroupBindingValidator returns a mutator for TargetGroupBinding CRD.
-func NewTargetGroupBindingValidator(k8sClient client.Client, elbv2Client services.ELBV2, logger logr.Logger) *targetGroupBindingValidator {
+var vpcIDPatternRegex = regexp.MustCompile("^(?:vpc-[0-9a-f]{8}|vpc-[0-9a-f]{17}|vpc-[0-9a-f]{32})$")
+
+// NewTargetGroupBindingValidator returns a validator for TargetGroupBinding CRD.
+func NewTargetGroupBindingValidator(k8sClient client.Client, elbv2Client services.ELBV2, vpcID string, logger logr.Logger, metricsCollector lbcmetrics.MetricCollector) *targetGroupBindingValidator {
 	return &targetGroupBindingValidator{
-		k8sClient:   k8sClient,
-		elbv2Client: elbv2Client,
-		logger:      logger,
+		k8sClient:        k8sClient,
+		elbv2Client:      elbv2Client,
+		logger:           logger,
+		vpcID:            vpcID,
+		metricsCollector: metricsCollector,
 	}
 }
 
 var _ webhook.Validator = &targetGroupBindingValidator{}
 
 type targetGroupBindingValidator struct {
-	k8sClient   client.Client
-	elbv2Client services.ELBV2
-	logger      logr.Logger
+	k8sClient        client.Client
+	elbv2Client      services.ELBV2
+	logger           logr.Logger
+	vpcID            string
+	metricsCollector lbcmetrics.MetricCollector
 }
 
 func (v *targetGroupBindingValidator) Prototype(_ admission.Request) (runtime.Object, error) {
@@ -43,31 +63,70 @@ func (v *targetGroupBindingValidator) Prototype(_ admission.Request) (runtime.Ob
 
 func (v *targetGroupBindingValidator) ValidateCreate(ctx context.Context, obj runtime.Object) error {
 	tgb := obj.(*elbv2api.TargetGroupBinding)
-	if err := v.checkRequiredFields(tgb); err != nil {
+
+	targetGroupCache := sync.OnceValue(func() tgCacheObject {
+		targetGroup, err := getTargetGroupFromAWS(ctx, v.elbv2Client, tgb)
+		return tgCacheObject{
+			tg:    targetGroup,
+			error: err,
+		}
+	})
+
+	if err := v.checkRequiredFields(ctx, tgb); err != nil {
+		v.metricsCollector.ObserveWebhookValidationError(apiPathValidateELBv2TargetGroupBinding, "checkRequiredFields")
 		return err
 	}
 	if err := v.checkNodeSelector(tgb); err != nil {
+		v.metricsCollector.ObserveWebhookValidationError(apiPathValidateELBv2TargetGroupBinding, "checkNodeSelector")
 		return err
 	}
 	if err := v.checkExistingTargetGroups(tgb); err != nil {
+		v.metricsCollector.ObserveWebhookValidationError(apiPathValidateELBv2TargetGroupBinding, "checkExistingTargetGroups")
 		return err
 	}
-	if err := v.checkTargetGroupIPAddressType(ctx, tgb); err != nil {
+	if err := v.checkTargetGroupIPAddressType(tgb, targetGroupCache); err != nil {
+		v.metricsCollector.ObserveWebhookValidationError(apiPathValidateELBv2TargetGroupBinding, "checkTargetGroupIPAddressType")
 		return err
 	}
+	if err := v.checkTargetGroupVpcID(tgb, targetGroupCache); err != nil {
+		v.metricsCollector.ObserveWebhookValidationError(apiPathValidateELBv2TargetGroupBinding, "checkTargetGroupVpcID")
+		return err
+
+	}
+	if err := v.checkAssumeRoleConfig(tgb); err != nil {
+		v.metricsCollector.ObserveWebhookValidationError(apiPathValidateELBv2TargetGroupBinding, "checkAssumeRoleConfig")
+		return err
+	}
+
+	if err := v.checkTargetGroupProtocol(tgb, targetGroupCache); err != nil {
+		v.metricsCollector.ObserveWebhookValidationError(apiPathValidateELBv2TargetGroupBinding, "checkTargetGroupProtocol")
+		return err
+	}
+
 	return nil
 }
 
 func (v *targetGroupBindingValidator) ValidateUpdate(ctx context.Context, obj runtime.Object, oldObj runtime.Object) error {
 	tgb := obj.(*elbv2api.TargetGroupBinding)
 	oldTgb := oldObj.(*elbv2api.TargetGroupBinding)
-	if err := v.checkRequiredFields(tgb); err != nil {
+	if err := v.checkRequiredFields(ctx, tgb); err != nil {
+		v.metricsCollector.ObserveWebhookValidationError(apiPathValidateELBv2TargetGroupBinding, "checkRequiredFields")
 		return err
 	}
 	if err := v.checkImmutableFields(tgb, oldTgb); err != nil {
+		v.metricsCollector.ObserveWebhookValidationError(apiPathValidateELBv2TargetGroupBinding, "checkImmutableFields")
 		return err
 	}
 	if err := v.checkNodeSelector(tgb); err != nil {
+		v.metricsCollector.ObserveWebhookValidationError(apiPathValidateELBv2TargetGroupBinding, "checkNodeSelector")
+		return err
+	}
+	if err := v.checkAssumeRoleConfig(tgb); err != nil {
+		v.metricsCollector.ObserveWebhookValidationError(apiPathValidateELBv2TargetGroupBinding, "checkAssumeRoleConfig")
+		return err
+	}
+	if err := v.checkExistingTargetGroups(tgb); err != nil {
+		v.metricsCollector.ObserveWebhookValidationError(apiPathValidateELBv2TargetGroupBinding, "checkExistingTargetGroups")
 		return err
 	}
 	return nil
@@ -78,8 +137,30 @@ func (v *targetGroupBindingValidator) ValidateDelete(ctx context.Context, obj ru
 }
 
 // checkRequiredFields will check required fields are not absent.
-func (v *targetGroupBindingValidator) checkRequiredFields(tgb *elbv2api.TargetGroupBinding) error {
+func (v *targetGroupBindingValidator) checkRequiredFields(ctx context.Context, tgb *elbv2api.TargetGroupBinding) error {
 	var absentRequiredFields []string
+	if tgb.Spec.TargetGroupARN == "" {
+		if tgb.Spec.TargetGroupName == "" {
+			absentRequiredFields = append(absentRequiredFields, "either TargetGroupARN or TargetGroupName")
+		} else if tgb.Spec.TargetGroupName != "" {
+			/*
+				The purpose of this code is to guarantee that the either the ARN of the TargetGroup exists
+				or it's possible to infer the ARN by the name of the TargetGroup (since it's unique).
+
+				And even though the validator can't mutate, I added tgb.Spec.TargetGroupARN = *tgObj.TargetGroupArn
+				to guarantee the object is in a consistent state though the rest of the process.
+
+				The whole code of aws-load-balancer-controller was written assuming there is an ARN.
+				By changing the object here I guarantee as early as possible that that assumption is true.
+			*/
+
+			tgObj, err := getTargetGroupsByNameFromAWS(ctx, v.elbv2Client, tgb)
+			if err != nil {
+				return fmt.Errorf("searching TargetGroup with name %s: %w", tgb.Spec.TargetGroupName, err)
+			}
+			tgb.Spec.TargetGroupARN = *tgObj.TargetGroupArn
+		}
+	}
 	if tgb.Spec.TargetType == nil {
 		absentRequiredFields = append(absentRequiredFields, "spec.targetType")
 	}
@@ -108,24 +189,41 @@ func (v *targetGroupBindingValidator) checkImmutableFields(tgb *elbv2api.TargetG
 	if oldTGB.Spec.IPAddressType != nil && tgb.Spec.IPAddressType != nil && (*oldTGB.Spec.IPAddressType) != (*tgb.Spec.IPAddressType) {
 		changedImmutableFields = append(changedImmutableFields, "spec.ipAddressType")
 	}
+	if (tgb.Spec.VpcID != "" && oldTGB.Spec.VpcID != "" && (tgb.Spec.VpcID) != (oldTGB.Spec.VpcID)) ||
+		(oldTGB.Spec.VpcID != "" && tgb.Spec.VpcID == "") ||
+		(oldTGB.Spec.VpcID == "" && tgb.Spec.VpcID != "" && tgb.Spec.VpcID != v.vpcID) {
+		changedImmutableFields = append(changedImmutableFields, "spec.vpcID")
+	}
 	if len(changedImmutableFields) != 0 {
-		return errors.Errorf("%s update may not change these fields: %s", "TargetGroupBinding", strings.Join(changedImmutableFields, ","))
+		return errors.Errorf("%s update may not change these immutable fields: %s", "TargetGroupBinding", strings.Join(changedImmutableFields, ","))
 	}
 	return nil
 }
 
 // checkExistingTargetGroups will check for unique TargetGroup per TargetGroupBinding
-func (v *targetGroupBindingValidator) checkExistingTargetGroups(tgb *elbv2api.TargetGroupBinding) error {
+func (v *targetGroupBindingValidator) checkExistingTargetGroups(updatedTgb *elbv2api.TargetGroupBinding) error {
 	ctx := context.Background()
 	tgbList := elbv2api.TargetGroupBindingList{}
 	if err := v.k8sClient.List(ctx, &tgbList); err != nil {
 		return errors.Wrap(err, "failed to list TargetGroupBindings in the cluster")
 	}
+
+	duplicateTGBs := make([]types.NamespacedName, 0)
+	multiClusterSupported := updatedTgb.Spec.MultiClusterTargetGroup
+
 	for _, tgbObj := range tgbList.Items {
-		if tgbObj.Spec.TargetGroupARN == tgb.Spec.TargetGroupARN {
-			return errors.Errorf("TargetGroup %v is already bound to TargetGroupBinding %v", tgb.Spec.TargetGroupARN, k8s.NamespacedName(&tgbObj).String())
+		if tgbObj.UID != updatedTgb.UID && tgbObj.Spec.TargetGroupARN == updatedTgb.Spec.TargetGroupARN {
+			if !tgbObj.Spec.MultiClusterTargetGroup {
+				multiClusterSupported = false
+			}
+			duplicateTGBs = append(duplicateTGBs, k8s.NamespacedName(&tgbObj))
 		}
 	}
+
+	if len(duplicateTGBs) != 0 && !multiClusterSupported {
+		return errors.Errorf("TargetGroup %v is already bound to following TargetGroupBindings %v. Please enable MultiCluster mode on all TargetGroupBindings referencing %v or choose a different Target Group ARN.", updatedTgb.Spec.TargetGroupARN, duplicateTGBs, updatedTgb.Spec.TargetGroupARN)
+	}
+
 	return nil
 }
 
@@ -138,8 +236,8 @@ func (v *targetGroupBindingValidator) checkNodeSelector(tgb *elbv2api.TargetGrou
 }
 
 // checkTargetGroupIPAddressType ensures IP address type matches with that on the AWS target group
-func (v *targetGroupBindingValidator) checkTargetGroupIPAddressType(ctx context.Context, tgb *elbv2api.TargetGroupBinding) error {
-	targetGroupIPAddressType, err := v.getTargetGroupIPAddressTypeFromAWS(ctx, tgb.Spec.TargetGroupARN)
+func (v *targetGroupBindingValidator) checkTargetGroupIPAddressType(tgb *elbv2api.TargetGroupBinding, tgCache func() tgCacheObject) error {
+	targetGroupIPAddressType, err := v.getTargetGroupIPAddressTypeFromAWS(tgCache)
 	if err != nil {
 		return errors.Wrap(err, "unable to get target group IP address type")
 	}
@@ -150,41 +248,92 @@ func (v *targetGroupBindingValidator) checkTargetGroupIPAddressType(ctx context.
 	return nil
 }
 
+// checkTargetGroupVpcID ensures VpcID matches with that on the AWS target group
+func (v *targetGroupBindingValidator) checkTargetGroupVpcID(tgb *elbv2api.TargetGroupBinding, tgCache func() tgCacheObject) error {
+	if tgb.Spec.VpcID == "" {
+		return nil
+	}
+	if !vpcIDPatternRegex.MatchString(tgb.Spec.VpcID) {
+		return errors.Errorf(vpcIDValidationErr, tgb.Spec.VpcID)
+	}
+	vpcID, err := v.getVpcIDFromAWS(tgCache)
+	if err != nil {
+		return errors.Wrap(err, "unable to get target group VpcID")
+	}
+	if vpcID != tgb.Spec.VpcID {
+		return errors.Errorf(vpcIDNotMatchErr, tgb.Spec.VpcID, tgb.Spec.TargetGroupARN)
+	}
+	return nil
+}
+
 // getTargetGroupIPAddressTypeFromAWS returns the target group IP address type of AWS target group
-func (v *targetGroupBindingValidator) getTargetGroupIPAddressTypeFromAWS(ctx context.Context, tgARN string) (elbv2api.TargetGroupIPAddressType, error) {
-	targetGroup, err := v.getTargetGroupFromAWS(ctx, tgARN)
+func (v *targetGroupBindingValidator) getTargetGroupIPAddressTypeFromAWS(tgCache func() tgCacheObject) (elbv2api.TargetGroupIPAddressType, error) {
+
+	obj := tgCache()
+	targetGroup := obj.tg
+	err := obj.error
+
 	if err != nil {
 		return "", err
 	}
 	var ipAddressType elbv2api.TargetGroupIPAddressType
-	switch awssdk.StringValue(targetGroup.IpAddressType) {
-	case elbv2sdk.TargetGroupIpAddressTypeEnumIpv6:
+	switch string(targetGroup.IpAddressType) {
+	case string(elbv2types.TargetGroupIpAddressTypeEnumIpv6):
 		ipAddressType = elbv2api.TargetGroupIPAddressTypeIPv6
-	case elbv2sdk.TargetGroupIpAddressTypeEnumIpv4, "":
+	case string(elbv2types.TargetGroupIpAddressTypeEnumIpv4), "":
 		ipAddressType = elbv2api.TargetGroupIPAddressTypeIPv4
 	default:
-		return "", errors.Errorf("unsupported IPAddressType: %v", awssdk.StringValue(targetGroup.IpAddressType))
+		return "", errors.Errorf("unsupported IPAddressType: %v", string(targetGroup.IpAddressType))
 	}
 	return ipAddressType, nil
 }
 
-// getTargetGroupFromAWS returns the AWS target group corresponding to the ARN
-func (v *targetGroupBindingValidator) getTargetGroupFromAWS(ctx context.Context, tgARN string) (*elbv2sdk.TargetGroup, error) {
-	req := &elbv2sdk.DescribeTargetGroupsInput{
-		TargetGroupArns: awssdk.StringSlice([]string{tgARN}),
-	}
-	tgList, err := v.elbv2Client.DescribeTargetGroupsAsList(ctx, req)
+func (v *targetGroupBindingValidator) getVpcIDFromAWS(tgCache func() tgCacheObject) (string, error) {
+	obj := tgCache()
+	targetGroup := obj.tg
+	err := obj.error
 	if err != nil {
-		return nil, err
+		return "", err
 	}
-	if len(tgList) != 1 {
-		return nil, errors.Errorf("expecting a single targetGroup but got %v", len(tgList))
+	return awssdk.ToString(targetGroup.VpcId), nil
+}
+
+// checkAssumeRoleConfig various checks for using cross account target group bindings.
+func (v *targetGroupBindingValidator) checkAssumeRoleConfig(tgb *elbv2api.TargetGroupBinding) error {
+	if tgb.Spec.IamRoleArnToAssume == "" {
+		return nil
 	}
-	return tgList[0], nil
+
+	if tgb.Spec.TargetType != nil && *tgb.Spec.TargetType == elbv2api.TargetTypeInstance {
+		return errors.New("Unable to use instance target type while using assume role")
+	}
+
+	return nil
+}
+
+// checkTargetGroupVpcID ensures Target Group Protocol matches with that on the AWS target group
+func (v *targetGroupBindingValidator) checkTargetGroupProtocol(tgb *elbv2api.TargetGroupBinding, tgCache func() tgCacheObject) error {
+	// Backwards compatibility -- nil is acceptable for legacy tgb
+	if tgb.Spec.TargetGroupProtocol == nil {
+		return nil
+	}
+	tgProtocol, err := obtainSDKTargetGroupProtocolFromAWS(tgCache)
+	if err != nil {
+		return errors.Wrap(err, "unable to get target group VpcID")
+	}
+	if tgProtocol != string(*tgb.Spec.TargetGroupProtocol) {
+		return errors.Errorf(tgProtocolMismatch, tgb.Spec.TargetGroupARN, *tgb.Spec.TargetGroupProtocol, tgProtocol)
+	}
+
+	if (tgProtocol == string(elbv2.ProtocolQUIC) || tgProtocol == string(elbv2.ProtocolTCP_QUIC)) && (tgb.Spec.TargetType != nil && *tgb.Spec.TargetType == elbv2api.TargetTypeInstance) {
+		return errors.Errorf(quicInstanceNotSupported)
+	}
+
+	return nil
 }
 
 // +kubebuilder:webhook:path=/validate-elbv2-k8s-aws-v1beta1-targetgroupbinding,mutating=false,failurePolicy=fail,groups=elbv2.k8s.aws,resources=targetgroupbindings,verbs=create;update,versions=v1beta1,name=vtargetgroupbinding.elbv2.k8s.aws,sideEffects=None,webhookVersions=v1,admissionReviewVersions=v1beta1
 
 func (v *targetGroupBindingValidator) SetupWithManager(mgr ctrl.Manager) {
-	mgr.GetWebhookServer().Register(apiPathValidateELBv2TargetGroupBinding, webhook.ValidatingWebhookForValidator(mgr.GetScheme(), v))
+	mgr.GetWebhookServer().Register(apiPathValidateELBv2TargetGroupBinding, webhook.ValidatingWebhookForValidator(v, mgr.GetScheme()))
 }

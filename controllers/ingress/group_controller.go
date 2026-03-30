@@ -3,30 +3,36 @@ package ingress
 import (
 	"context"
 	"fmt"
+	awsmetrics "sigs.k8s.io/aws-load-balancer-controller/pkg/metrics/aws"
+	"sigs.k8s.io/aws-load-balancer-controller/pkg/shared_utils"
+
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
 	networking "k8s.io/api/networking/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/record"
 	elbv2api "sigs.k8s.io/aws-load-balancer-controller/apis/elbv2/v1beta1"
 	"sigs.k8s.io/aws-load-balancer-controller/controllers/ingress/eventhandlers"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/annotations"
-	"sigs.k8s.io/aws-load-balancer-controller/pkg/aws"
+	"sigs.k8s.io/aws-load-balancer-controller/pkg/aws/services"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/config"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/deploy"
 	elbv2deploy "sigs.k8s.io/aws-load-balancer-controller/pkg/deploy/elbv2"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/deploy/tracking"
+	ctrlerrors "sigs.k8s.io/aws-load-balancer-controller/pkg/error"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/ingress"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/k8s"
+	lbcmetrics "sigs.k8s.io/aws-load-balancer-controller/pkg/metrics/lbc"
+	metricsutil "sigs.k8s.io/aws-load-balancer-controller/pkg/metrics/util"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/model/core"
 	elbv2model "sigs.k8s.io/aws-load-balancer-controller/pkg/model/elbv2"
 	networkingpkg "sigs.k8s.io/aws-load-balancer-controller/pkg/networking"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -43,27 +49,29 @@ const (
 )
 
 // NewGroupReconciler constructs new GroupReconciler
-func NewGroupReconciler(cloud aws.Cloud, k8sClient client.Client, eventRecorder record.EventRecorder,
+func NewGroupReconciler(cloud services.Cloud, k8sClient client.Client, eventRecorder record.EventRecorder,
 	finalizerManager k8s.FinalizerManager, networkingSGManager networkingpkg.SecurityGroupManager,
-	networkingSGReconciler networkingpkg.SecurityGroupReconciler, subnetsResolver networkingpkg.SubnetsResolver,
-	controllerConfig config.ControllerConfig, backendSGProvider networkingpkg.BackendSGProvider, cache cache.Cache, logger logr.Logger) *groupReconciler {
+	networkingManager networkingpkg.NetworkingManager, networkingSGReconciler networkingpkg.SecurityGroupReconciler, subnetsResolver networkingpkg.SubnetsResolver,
+	elbv2TaggingManager elbv2deploy.TaggingManager, controllerConfig config.ControllerConfig, backendSGProvider networkingpkg.BackendSGProvider,
+	sgResolver networkingpkg.SecurityGroupResolver, logger logr.Logger, metricsCollector lbcmetrics.MetricCollector, reconcileCounters *metricsutil.ReconcileCounters,
+	targetGroupCollector awsmetrics.TargetGroupCollector, targetGroupNameToArnMapper shared_utils.TargetGroupARNMapper) *groupReconciler {
 
 	annotationParser := annotations.NewSuffixAnnotationParser(annotations.AnnotationPrefixIngress)
 	authConfigBuilder := ingress.NewDefaultAuthConfigBuilder(annotationParser)
-	enhancedBackendBuilder := ingress.NewDefaultEnhancedBackendBuilder(k8sClient, annotationParser, authConfigBuilder)
+	enhancedBackendBuilder := ingress.NewDefaultEnhancedBackendBuilder(k8sClient, annotationParser, authConfigBuilder, controllerConfig.IngressConfig.TolerateNonExistentBackendService, controllerConfig.IngressConfig.TolerateNonExistentBackendAction)
 	referenceIndexer := ingress.NewDefaultReferenceIndexer(enhancedBackendBuilder, authConfigBuilder, logger)
 	trackingProvider := tracking.NewDefaultProvider(ingressTagPrefix, controllerConfig.ClusterName)
-	elbv2TaggingManager := elbv2deploy.NewDefaultTaggingManager(cloud.ELBV2(), cloud.VpcID(), controllerConfig.FeatureGates, logger)
 	modelBuilder := ingress.NewDefaultModelBuilder(k8sClient, eventRecorder,
-		cloud.EC2(), cloud.ACM(),
+		cloud.EC2(), cloud.ELBV2(), cloud.WAFv2(), cloud.ACM(),
 		annotationParser, subnetsResolver,
 		authConfigBuilder, enhancedBackendBuilder, trackingProvider, elbv2TaggingManager, controllerConfig.FeatureGates,
 		cloud.VpcID(), controllerConfig.ClusterName, controllerConfig.DefaultTags, controllerConfig.ExternalManagedTags,
-		controllerConfig.DefaultSSLPolicy, backendSGProvider, controllerConfig.EnableBackendSecurityGroup, controllerConfig.DisableRestrictedSGRules, controllerConfig.FeatureGates.Enabled(config.EnableIPTargetType), logger)
+		controllerConfig.DefaultSSLPolicy, controllerConfig.DefaultTargetType, controllerConfig.DefaultLoadBalancerScheme, backendSGProvider, sgResolver,
+		controllerConfig.EnableBackendSecurityGroup, controllerConfig.EnableManageBackendSecurityGroupRules, controllerConfig.DisableRestrictedSGRules, controllerConfig.IngressConfig.AllowedCertificateAuthorityARNs, controllerConfig.FeatureGates.Enabled(config.EnableIPTargetType), targetGroupNameToArnMapper, logger, metricsCollector)
 	stackMarshaller := deploy.NewDefaultStackMarshaller()
-	stackDeployer := deploy.NewDefaultStackDeployer(cloud, k8sClient, networkingSGManager, networkingSGReconciler,
-		controllerConfig, ingressTagPrefix, logger)
-	classLoader := ingress.NewDefaultClassLoader(k8sClient)
+	stackDeployer := deploy.NewDefaultStackDeployer(cloud, k8sClient, networkingManager, networkingSGManager, networkingSGReconciler, elbv2TaggingManager,
+		controllerConfig, ingressTagPrefix, logger, metricsCollector, controllerName, controllerConfig.FeatureGates.Enabled(config.EnhancedDefaultBehavior), targetGroupCollector, true)
+	classLoader := ingress.NewDefaultClassLoader(k8sClient, true)
 	classAnnotationMatcher := ingress.NewDefaultClassAnnotationMatcher(controllerConfig.IngressConfig.IngressClass)
 	manageIngressesWithoutIngressClass := controllerConfig.IngressConfig.IngressClass == ""
 	groupLoader := ingress.NewDefaultGroupLoader(k8sClient, eventRecorder, annotationParser, classLoader, classAnnotationMatcher, manageIngressesWithoutIngressClass)
@@ -81,10 +89,11 @@ func NewGroupReconciler(cloud aws.Cloud, k8sClient client.Client, eventRecorder 
 		groupLoader:           groupLoader,
 		groupFinalizerManager: groupFinalizerManager,
 		logger:                logger,
+		metricsCollector:      metricsCollector,
+		controllerName:        controllerName,
+		reconcileCounters:     reconcileCounters,
 
 		maxConcurrentReconciles: controllerConfig.IngressConfig.MaxConcurrentReconciles,
-
-		cache: cache,
 	}
 }
 
@@ -102,10 +111,11 @@ type groupReconciler struct {
 	groupLoader           ingress.GroupLoader
 	groupFinalizerManager ingress.FinalizerManager
 	logger                logr.Logger
+	metricsCollector      lbcmetrics.MetricCollector
+	controllerName        string
+	reconcileCounters     *metricsutil.ReconcileCounters
 
 	maxConcurrentReconciles int
-
-	cache cache.Cache
 }
 
 // +kubebuilder:rbac:groups=elbv2.k8s.aws,resources=ingressclassparams,verbs=get;list;watch
@@ -117,47 +127,72 @@ type groupReconciler struct {
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
-func (r *groupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *groupReconciler) Reconcile(ctx context.Context, req reconcile.Request) (ctrl.Result, error) {
+	r.reconcileCounters.IncrementIngress(req.NamespacedName)
 	return runtime.HandleReconcileError(r.reconcile(ctx, req), r.logger)
 }
 
-func (r *groupReconciler) reconcile(ctx context.Context, req ctrl.Request) error {
+func (r *groupReconciler) reconcile(ctx context.Context, req reconcile.Request) error {
 	ingGroupID := ingress.DecodeGroupIDFromReconcileRequest(req)
-	ingGroup, err := r.groupLoader.Load(ctx, ingGroupID)
+	var err error
+	var ingGroup ingress.Group
+	loadIngressFn := func() {
+		ingGroup, err = r.groupLoader.Load(ctx, ingGroupID)
+	}
+	r.metricsCollector.ObserveControllerReconcileLatency(controllerName, "fetch_ingress", loadIngressFn)
 	if err != nil {
-		return err
+		return ctrlerrors.NewErrorWithMetrics(controllerName, "fetch_ingress_error", err, r.metricsCollector)
 	}
 
-	if err := r.groupFinalizerManager.AddGroupFinalizer(ctx, ingGroupID, ingGroup.Members); err != nil {
-		r.recordIngressGroupEvent(ctx, ingGroup, corev1.EventTypeWarning, k8s.IngressEventReasonFailedAddFinalizer, fmt.Sprintf("Failed add finalizer due to %v", err))
-		return err
+	addFinalizerFn := func() {
+		err = r.groupFinalizerManager.AddGroupFinalizer(ctx, ingGroupID, ingGroup.Members)
 	}
-	_, lb, err := r.buildAndDeployModel(ctx, ingGroup)
+	r.metricsCollector.ObserveControllerReconcileLatency(controllerName, "add_group_finalizer", addFinalizerFn)
+	if err != nil {
+		r.recordIngressGroupEvent(ctx, ingGroup, corev1.EventTypeWarning, k8s.IngressEventReasonFailedAddFinalizer, fmt.Sprintf("Failed add finalizer due to %v", err))
+		return ctrlerrors.NewErrorWithMetrics(controllerName, "add_group_finalizer_error", err, r.metricsCollector)
+	}
+
+	_, lb, frontendNlb, listenerPorts, err := r.buildAndDeployModel(ctx, ingGroup)
 	if err != nil {
 		return err
 	}
 
 	if len(ingGroup.Members) > 0 && lb != nil {
-		lbDNS, err := lb.DNSName().Resolve(ctx)
-		if err != nil {
-			return err
+		var statusErr error
+		dnsResolveAndUpdateStatus := func() {
+			var lbDNS string
+			lbDNS, statusErr = lb.DNSName().Resolve(ctx)
+			if statusErr != nil {
+				return
+			}
+			var frontendNlbDNS string
+			if frontendNlb != nil {
+				frontendNlbDNS, statusErr = frontendNlb.DNSName().Resolve(ctx)
+				if statusErr != nil {
+					return
+				}
+			}
+			statusErr = r.updateIngressGroupStatus(ctx, ingGroup, lbDNS, frontendNlbDNS, listenerPorts)
+			if statusErr != nil {
+				r.recordIngressGroupEvent(ctx, ingGroup, corev1.EventTypeWarning, k8s.IngressEventReasonFailedUpdateStatus,
+					fmt.Sprintf("Failed update status due to %v", statusErr))
+			}
 		}
-		if err := r.updateIngressGroupStatus(ctx, ingGroup, lbDNS); err != nil {
-			r.recordIngressGroupEvent(ctx, ingGroup, corev1.EventTypeWarning, k8s.IngressEventReasonFailedUpdateStatus, fmt.Sprintf("Failed update status due to %v", err))
-			return err
-		}
-	}
-
-	if len(ingGroup.Members) == 0 {
-		if err := r.backendSGProvider.Release(ctx); err != nil {
-			return err
+		r.metricsCollector.ObserveControllerReconcileLatency(controllerName, "dns_resolve_and_update_status", dnsResolveAndUpdateStatus)
+		if statusErr != nil {
+			return ctrlerrors.NewErrorWithMetrics(controllerName, "dns_resolve_and_update_status_error", statusErr, r.metricsCollector)
 		}
 	}
 
 	if len(ingGroup.InactiveMembers) > 0 {
-		if err := r.groupFinalizerManager.RemoveGroupFinalizer(ctx, ingGroupID, ingGroup.InactiveMembers); err != nil {
+		removeGroupFinalizerFn := func() {
+			err = r.groupFinalizerManager.RemoveGroupFinalizer(ctx, ingGroupID, ingGroup.InactiveMembers)
+		}
+		r.metricsCollector.ObserveControllerReconcileLatency(controllerName, "remove_group_finalizer", removeGroupFinalizerFn)
+		if err != nil {
 			r.recordIngressGroupEvent(ctx, ingGroup, corev1.EventTypeWarning, k8s.IngressEventReasonFailedRemoveFinalizer, fmt.Sprintf("Failed remove finalizer due to %v", err))
-			return err
+			return ctrlerrors.NewErrorWithMetrics(controllerName, "remove_group_finalizer_error", err, r.metricsCollector)
 		}
 	}
 
@@ -165,26 +200,52 @@ func (r *groupReconciler) reconcile(ctx context.Context, req ctrl.Request) error
 	return nil
 }
 
-func (r *groupReconciler) buildAndDeployModel(ctx context.Context, ingGroup ingress.Group) (core.Stack, *elbv2model.LoadBalancer, error) {
-	stack, lb, secrets, err := r.modelBuilder.Build(ctx, ingGroup)
+func (r *groupReconciler) buildAndDeployModel(ctx context.Context, ingGroup ingress.Group) (core.Stack, *elbv2model.LoadBalancer, *elbv2model.LoadBalancer, []int32, error) {
+	var stack core.Stack
+	var lb *elbv2model.LoadBalancer
+	var secrets []types.NamespacedName
+	var backendSGRequired bool
+	var err error
+	var frontendNlb *elbv2model.LoadBalancer
+	var listenerPorts []int32
+	buildModelFn := func() {
+		stack, lb, secrets, backendSGRequired, frontendNlb, listenerPorts, err = r.modelBuilder.Build(ctx, ingGroup, r.metricsCollector)
+	}
+	r.metricsCollector.ObserveControllerReconcileLatency(controllerName, "build_model", buildModelFn)
 	if err != nil {
 		r.recordIngressGroupEvent(ctx, ingGroup, corev1.EventTypeWarning, k8s.IngressEventReasonFailedBuildModel, fmt.Sprintf("Failed build model due to %v", err))
-		return nil, nil, err
+		return nil, nil, nil, nil, ctrlerrors.NewErrorWithMetrics(controllerName, "build_model_error", err, r.metricsCollector)
 	}
 	stackJSON, err := r.stackMarshaller.Marshal(stack)
 	if err != nil {
 		r.recordIngressGroupEvent(ctx, ingGroup, corev1.EventTypeWarning, k8s.IngressEventReasonFailedBuildModel, fmt.Sprintf("Failed build model due to %v", err))
-		return nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	r.logger.Info("successfully built model", "model", stackJSON)
 
-	if err := r.stackDeployer.Deploy(ctx, stack); err != nil {
+	deployModelFn := func() {
+		err = r.stackDeployer.Deploy(ctx, stack, r.metricsCollector, "ingress")
+	}
+	r.metricsCollector.ObserveControllerReconcileLatency(controllerName, "deploy_model", deployModelFn)
+	if err != nil {
+		var requeueNeededAfter *ctrlerrors.RequeueNeededAfter
+		if errors.As(err, &requeueNeededAfter) {
+			return nil, nil, nil, nil, err
+		}
 		r.recordIngressGroupEvent(ctx, ingGroup, corev1.EventTypeWarning, k8s.IngressEventReasonFailedDeployModel, fmt.Sprintf("Failed deploy model due to %v", err))
-		return nil, nil, err
+		return nil, nil, nil, nil, ctrlerrors.NewErrorWithMetrics(controllerName, "deploy_model_error", err, r.metricsCollector)
 	}
 	r.logger.Info("successfully deployed model", "ingressGroup", ingGroup.ID)
 	r.secretsManager.MonitorSecrets(ingGroup.ID.String(), secrets)
-	return stack, lb, err
+	var inactiveResources []types.NamespacedName
+	inactiveResources = append(inactiveResources, k8s.ToSliceOfNamespacedNames(ingGroup.InactiveMembers)...)
+	if !backendSGRequired {
+		inactiveResources = append(inactiveResources, k8s.ToSliceOfNamespacedNames(ingGroup.Members)...)
+	}
+	if err := r.backendSGProvider.Release(ctx, networkingpkg.ResourceTypeIngress, inactiveResources); err != nil {
+		return nil, nil, nil, nil, ctrlerrors.NewErrorWithMetrics(controllerName, "release_auto_generated_backend_sg_error", err, r.metricsCollector)
+	}
+	return stack, lb, frontendNlb, listenerPorts, nil
 }
 
 func (r *groupReconciler) recordIngressGroupEvent(_ context.Context, ingGroup ingress.Group, eventType string, reason string, message string) {
@@ -193,29 +254,51 @@ func (r *groupReconciler) recordIngressGroupEvent(_ context.Context, ingGroup in
 	}
 }
 
-func (r *groupReconciler) updateIngressGroupStatus(ctx context.Context, ingGroup ingress.Group, lbDNS string) error {
+func (r *groupReconciler) updateIngressGroupStatus(ctx context.Context, ingGroup ingress.Group, lbDNS string, frontendNLBDNS string, listenerPorts []int32) error {
 	for _, member := range ingGroup.Members {
-		if err := r.updateIngressStatus(ctx, lbDNS, member.Ing); err != nil {
+		if err := r.updateIngressStatus(ctx, lbDNS, frontendNLBDNS, member.Ing, listenerPorts); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (r *groupReconciler) updateIngressStatus(ctx context.Context, lbDNS string, ing *networking.Ingress) error {
+func (r *groupReconciler) updateIngressStatus(ctx context.Context, lbDNS string, frontendNlbDNS string, ing *networking.Ingress, ports []int32) error {
+	ingressPorts := make([]networking.IngressPortStatus, len(ports))
+	for i, port := range ports {
+		ingressPorts[i] = networking.IngressPortStatus{
+			Port: port,
+		}
+	}
+
+	ingOld := ing.DeepCopy()
 	if len(ing.Status.LoadBalancer.Ingress) != 1 ||
 		ing.Status.LoadBalancer.Ingress[0].IP != "" ||
 		ing.Status.LoadBalancer.Ingress[0].Hostname != lbDNS {
-		ingOld := ing.DeepCopy()
 		ing.Status.LoadBalancer.Ingress = []networking.IngressLoadBalancerIngress{
 			{
 				Hostname: lbDNS,
+				Ports:    ingressPorts,
 			},
 		}
+	} else if len(ports) > 0 {
+		ing.Status.LoadBalancer.Ingress[0].Ports = ingressPorts
+	}
+
+	// Ensure frontendNLBDNS is appended if it is not already added
+	if frontendNlbDNS != "" && !hasFrontendNlbHostName(ing.Status.LoadBalancer.Ingress, frontendNlbDNS) {
+		ing.Status.LoadBalancer.Ingress = append(ing.Status.LoadBalancer.Ingress, networking.IngressLoadBalancerIngress{
+			Hostname: frontendNlbDNS,
+		})
+	}
+
+	if !isIngressStatusEqual(ingOld.Status.LoadBalancer.Ingress, ing.Status.LoadBalancer.Ingress) {
 		if err := r.k8sClient.Status().Patch(ctx, ing, client.MergeFrom(ingOld)); err != nil {
 			return errors.Wrapf(err, "failed to update ingress status: %v", k8s.NamespacedName(ing))
 		}
+
 	}
+
 	return nil
 }
 
@@ -232,7 +315,7 @@ func (r *groupReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager
 	if err != nil {
 		return err
 	}
-	ingressClassResourceAvailable := isResourceKindAvailable(resList, ingressClassKind)
+	ingressClassResourceAvailable := k8s.IsResourceKindAvailable(resList, ingressClassKind)
 	if err := r.setupIndexes(ctx, mgr.GetFieldIndexer(), ingressClassResourceAvailable); err != nil {
 		return err
 	}
@@ -328,12 +411,71 @@ func (r *groupReconciler) setupWatches(_ context.Context, c controller.Controlle
 	return nil
 }
 
-// isResourceKindAvailable checks whether specific kind is available.
-func isResourceKindAvailable(resList *metav1.APIResourceList, kind string) bool {
-	for _, res := range resList.APIResources {
-		if res.Kind == kind {
+func isIngressStatusEqual(a, b []networking.IngressLoadBalancerIngress) bool {
+	if len(a) != len(b) {
+		return false
+	}
+
+	hostnameToPortsA := make(map[string]map[int32]struct{})
+	hostnameToPortsB := make(map[string]map[int32]struct{})
+
+	for _, ingress := range a {
+		if ingress.Hostname == "" {
+			continue
+		}
+
+		portSet := make(map[int32]struct{})
+		for _, portStatus := range ingress.Ports {
+			portSet[portStatus.Port] = struct{}{}
+		}
+		hostnameToPortsA[ingress.Hostname] = portSet
+	}
+
+	for _, ingress := range b {
+		if ingress.Hostname == "" {
+			continue
+		}
+
+		portSet := make(map[int32]struct{})
+		for _, portStatus := range ingress.Ports {
+			portSet[portStatus.Port] = struct{}{}
+		}
+		hostnameToPortsB[ingress.Hostname] = portSet
+	}
+
+	// Check if the maps are equal (same hostnames with same ports)
+	if len(hostnameToPortsA) != len(hostnameToPortsB) {
+		return false
+	}
+
+	// Check if all hostnames in A exist in B with the same ports
+	for hostname, portsA := range hostnameToPortsA {
+		portsB, exists := hostnameToPortsB[hostname]
+		if !exists {
+			return false // Hostname in A doesn't exist in B
+		}
+
+		// Check if port sets are equal (same length and same values)
+		if len(portsA) != len(portsB) {
+			return false
+		}
+
+		// Check if all ports in A exist in B
+		for port := range portsA {
+			if _, exists := portsB[port]; !exists {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func hasFrontendNlbHostName(ingressList []networking.IngressLoadBalancerIngress, frontendNlbDNS string) bool {
+	for _, ingress := range ingressList {
+		if ingress.Hostname == frontendNlbDNS {
 			return true
 		}
+
 	}
 	return false
 }

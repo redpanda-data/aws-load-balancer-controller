@@ -9,7 +9,7 @@ The pod readiness gate is needed under certain circumstances to achieve full zer
 
 * Low number of replicas in a deployment
 * Start a rolling update of the deployment
-* Rollout of new pods takes less time than it takes the AWS Load Balancer controller to register the new pods and for their health state turn »Healthy« in the target group
+* Rollout of new pods takes less time than it takes the AWS Load Balancer controller to register the new pods and for their health state to become »Healthy« in the target group
 * At some point during this rolling update, the target group might only have registered targets that are in »Initial« or »Draining« state; this results in service outage
 
 In order to avoid this situation, the AWS Load Balancer controller can set the readiness condition on the pods that constitute your ingress or service backend. The condition status on a pod will be set to `True` only when the corresponding target in the ALB/NLB target group shows a health state of »Healthy«.
@@ -46,6 +46,21 @@ The readiness gates have the prefix `target-health.elbv2.k8s.aws` and the contro
 
 !!!tip "create ingress or service before pod"
     To ensure all of your pods in a namespace get the readiness gate config, you need create your Ingress or Service and label the namespace before creating the pods
+
+## FailurePolicy
+The `failurePolicy` of a webhook determines how errors, such as unrecognized or timeout errors, are handled by the admission webhook.
+
+* `failurePolicy: Fail`: When applied to a pod mutation webhook, this setting will prevent the launch of any pods in labeled namespaces if the AWSLoadBalancerController pods are unavailable. While this can help avoid incomplete or faulty deployments, it could also delay the cluster's recovery in extreme scenarios, such as an API Server outage.
+* `failurePolicy: Ignore`: Setting this policy allows Kubernetes to proceed with pod deployments even if the AWSLoadBalancerController pods are unavailable. This can lead to availability risks for applications since Kubernetes may terminate application pods before the new pods have become healthy in the TargetGroups
+
+To strike a balance between reliability and availability, the default failurePolicy for pod mutation webhooks that inject readiness gates is configured as follows:
+
+* `failurePolicy: Ignore` (for versions > v2.11.0)
+* `failurePolicy: Fail` (for versions <= v2.11.0)
+You can customize the behavior using Helm chart settings, e.g. `--set podMutatorWebhookConfig.failurePolicy=Fail`
+
+!!!note "Recommended settings"
+    For optimal reliability & availability, it is recommended to use `failurePolicy: Fail` combined with an explicit [Object Selector](#object-selector)
 
 ## Object Selector
 The default webhook configuration matches all pods in the namespaces containing the label `elbv2.k8s.aws/pod-readiness-gate-inject=enabled`. You can modify the webhook configuration further

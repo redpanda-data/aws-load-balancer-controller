@@ -8,24 +8,24 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/k8s"
 	"sigs.k8s.io/aws-load-balancer-controller/test/framework"
+	"sigs.k8s.io/aws-load-balancer-controller/test/framework/utils"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 const (
-	defaultTestImage   = "public.ecr.aws/l6m2t8p7/hello-multi:latest"
 	appContainerPort   = 80
 	defaultNumReplicas = 3
 	defaultName        = "instance-e2e"
 )
 
 type NLBInstanceTestStack struct {
-	resourceStack *resourceStack
+	resourceStack *ResourceStack
 }
 
-func (s *NLBInstanceTestStack) Deploy(ctx context.Context, f *framework.Framework, svcAnnotations map[string]string) error {
-	dp := s.buildDeploymentSpec()
+func (s *NLBInstanceTestStack) Deploy(ctx context.Context, f *framework.Framework, svcAnnotations map[string]string, lbTypeSvcs []*corev1.Service, nonLbTypeSvcs []*corev1.Service) error {
+	dp := s.buildDeploymentSpec(f.Options.TestImageRegistry)
 	svc := s.buildServiceSpec(ctx, svcAnnotations)
-	s.resourceStack = NewResourceStack(dp, svc, "service-instance-e2e", false)
+	s.resourceStack = NewResourceStack(dp, svc, lbTypeSvcs, nonLbTypeSvcs, "service-instance-e2e", map[string]string{})
 
 	return s.resourceStack.Deploy(ctx, f)
 }
@@ -69,6 +69,19 @@ func (s *NLBInstanceTestStack) GetWorkerNodes(ctx context.Context, f *framework.
 	return nodeList, nil
 }
 
+// GetServiceNodePort retrieves the actual NodePort assigned to a service by Kubernetes
+func (s *NLBInstanceTestStack) GetServiceNodePort(ctx context.Context, f *framework.Framework, svc *corev1.Service) (int32, error) {
+	// Get the current service from the API server to ensure we have the latest state NodePort info
+	currentSvc := &corev1.Service{}
+	if err := f.K8sClient.Get(ctx, k8s.NamespacedName(svc), currentSvc); err != nil {
+		f.Logger.Info("failed to get service", "service", k8s.NamespacedName(svc))
+		return 0, err
+	}
+
+	// Return the NodePort from the specified port
+	return currentSvc.Spec.Ports[0].NodePort, nil
+}
+
 func (s *NLBInstanceTestStack) ApplyNodeLabels(ctx context.Context, f *framework.Framework, node *corev1.Node, labels map[string]string) error {
 	f.Logger.Info("applying node labels", "node", k8s.NamespacedName(node))
 	oldNode := node.DeepCopy()
@@ -82,12 +95,13 @@ func (s *NLBInstanceTestStack) ApplyNodeLabels(ctx context.Context, f *framework
 	return nil
 }
 
-func (s *NLBInstanceTestStack) buildDeploymentSpec() *appsv1.Deployment {
+func (s *NLBInstanceTestStack) buildDeploymentSpec(testImageRegistry string) *appsv1.Deployment {
 	numReplicas := int32(defaultNumReplicas)
 	labels := map[string]string{
 		"app.kubernetes.io/name":     "multi-port",
 		"app.kubernetes.io/instance": defaultName,
 	}
+	dpImage := utils.GetDeploymentImage(testImageRegistry, utils.HelloImage)
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: defaultName,
@@ -106,7 +120,7 @@ func (s *NLBInstanceTestStack) buildDeploymentSpec() *appsv1.Deployment {
 						{
 							Name:            "app",
 							ImagePullPolicy: corev1.PullAlways,
-							Image:           defaultTestImage,
+							Image:           dpImage,
 							Ports: []corev1.ContainerPort{
 								{
 									ContainerPort: appContainerPort,

@@ -1,3 +1,8 @@
+!!!question "EKS Auto Mode users"
+    If you are using EKS Auto Mode, please see the
+    [EKS Auto Mode documentation](https://docs.aws.amazon.com/eks/latest/userguide/auto-configure-alb.html#_considerations)
+    for key differences between the load balancing capability of EKS Auto Mode and the open source load balancer controller.
+
 <p>Packages:</p>
 <ul>
 <li>
@@ -52,10 +57,20 @@ Kubernetes meta/v1.ObjectMeta
 </em>
 </td>
 <td>
-Refer to the Kubernetes API documentation for the fields of the
+<table>
+<tr><td><code>annotations</code></td><td>
+
+<tr><td colspan=2>
+Refer to the Kubernetes API documentation for the other fields of the
 <code>metadata</code> field.
+</td></tr>
+</table></td></tr>
+
+
+
 </td>
 </tr>
+
 <tr>
 <td>
 <code>spec</code></br>

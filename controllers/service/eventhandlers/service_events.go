@@ -34,29 +34,22 @@ type enqueueRequestsForServiceEvent struct {
 }
 
 func (h *enqueueRequestsForServiceEvent) Create(ctx context.Context, e event.CreateEvent, queue workqueue.TypedRateLimitingInterface[reconcile.Request]) {
-	o, ok := e.Object.(*corev1.Service)
-	if !ok {
-		return
-	}
-	h.enqueueManagedService(queue, o)
+	h.enqueueManagedService(ctx, queue, e.Object.(*corev1.Service))
 }
 
 func (h *enqueueRequestsForServiceEvent) Update(ctx context.Context, e event.UpdateEvent, queue workqueue.TypedRateLimitingInterface[reconcile.Request]) {
-	oldSvc, ok := e.ObjectOld.(*corev1.Service)
-	if !ok {
-		return
-	}
-	newSvc, ok := e.ObjectNew.(*corev1.Service)
-	if !ok {
-		return
-	}
-	if equality.Semantic.DeepEqual(oldSvc.Annotations, newSvc.Annotations) &&
-		equality.Semantic.DeepEqual(oldSvc.Spec, newSvc.Spec) &&
-		equality.Semantic.DeepEqual(oldSvc.DeletionTimestamp.IsZero(), newSvc.DeletionTimestamp.IsZero()) {
-		return
+	oldSvc := e.ObjectOld.(*corev1.Service)
+	newSvc := e.ObjectNew.(*corev1.Service)
+
+	if !equality.Semantic.DeepEqual(oldSvc.ResourceVersion, newSvc.ResourceVersion) {
+		if equality.Semantic.DeepEqual(oldSvc.Annotations, newSvc.Annotations) &&
+			equality.Semantic.DeepEqual(oldSvc.Spec, newSvc.Spec) &&
+			equality.Semantic.DeepEqual(oldSvc.DeletionTimestamp.IsZero(), newSvc.DeletionTimestamp.IsZero()) {
+			return
+		}
 	}
 
-	h.enqueueManagedService(queue, newSvc)
+	h.enqueueManagedService(ctx, queue, newSvc)
 }
 
 func (h *enqueueRequestsForServiceEvent) Delete(ctx context.Context, e event.DeleteEvent, queue workqueue.TypedRateLimitingInterface[reconcile.Request]) {
@@ -68,7 +61,7 @@ func (h *enqueueRequestsForServiceEvent) Delete(ctx context.Context, e event.Del
 func (h *enqueueRequestsForServiceEvent) Generic(ctx context.Context, e event.GenericEvent, queue workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 }
 
-func (h *enqueueRequestsForServiceEvent) enqueueManagedService(queue workqueue.TypedRateLimitingInterface[reconcile.Request], service *corev1.Service) {
+func (h *enqueueRequestsForServiceEvent) enqueueManagedService(ctx context.Context, queue workqueue.TypedRateLimitingInterface[reconcile.Request], service *corev1.Service) {
 	// Check if the svc needs to be handled
 	if !h.serviceUtils.IsServicePendingFinalization(service) && !h.serviceUtils.IsServiceSupported(service) {
 		return

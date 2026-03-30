@@ -2,7 +2,6 @@ package eventhandlers
 
 import (
 	"context"
-
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/go-logr/logr"

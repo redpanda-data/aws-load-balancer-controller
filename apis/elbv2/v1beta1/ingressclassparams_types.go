@@ -20,13 +20,14 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// +kubebuilder:validation:Enum=ipv4;dualstack
+// +kubebuilder:validation:Enum=ipv4;dualstack;dualstack-without-public-ipv4
 // IPAddressType is the ip address type of load balancer.
 type IPAddressType string
 
 const (
-	IPAddressTypeIPV4      IPAddressType = "ipv4"
-	IPAddressTypeDualStack IPAddressType = "dualstack"
+	IPAddressTypeIPV4                       IPAddressType = "ipv4"
+	IPAddressTypeDualStack                  IPAddressType = "dualstack"
+	IPAddressTypeDualStackWithoutPublicIPV4 IPAddressType = "dualstack-without-public-ipv4"
 )
 
 // +kubebuilder:validation:Enum=internal;internet-facing
@@ -40,6 +41,25 @@ const (
 	LoadBalancerSchemeInternal       LoadBalancerScheme = "internal"
 	LoadBalancerSchemeInternetFacing LoadBalancerScheme = "internet-facing"
 )
+
+// SubnetID specifies a subnet ID.
+// +kubebuilder:validation:Pattern=subnet-[0-9a-f]+
+type SubnetID string
+
+// SubnetSelector selects one or more existing subnets.
+type SubnetSelector struct {
+	// IDs specify the resource IDs of subnets. Exactly one of this or `tags` must be specified.
+	// +kubebuilder:validation:MinItems=1
+	// +optional
+	IDs []SubnetID `json:"ids,omitempty"`
+
+	// Tags specifies subnets in the load balancer's VPC where each
+	// tag specified in the map key contains one of the values in the corresponding
+	// value list.
+	// Exactly one of this or `ids` must be specified.
+	// +optional
+	Tags map[string][]string `json:"tags,omitempty"`
+}
 
 // IngressGroup defines IngressGroup configuration.
 type IngressGroup struct {
@@ -65,8 +85,46 @@ type Attribute struct {
 	Value string `json:"value"`
 }
 
+type ListenerProtocol string
+
+const (
+	ListenerProtocolHTTP  ListenerProtocol = "HTTP"
+	ListenerProtocolHTTPS ListenerProtocol = "HTTPS"
+)
+
+type Listener struct {
+	// The protocol of the listener
+	Protocol ListenerProtocol `json:"protocol,omitempty"`
+	// The port of the listener
+	Port int32 `json:"port,omitempty"`
+	// The attributes of the listener
+	ListenerAttributes []Attribute `json:"listenerAttributes,omitempty"`
+}
+
+// Information about a load balancer capacity reservation.
+type MinimumLoadBalancerCapacity struct {
+	// The Capacity Units Value.
+	CapacityUnits int32 `json:"capacityUnits"`
+}
+
+// IPAMConfiguration defines the IPAM configuration for an Ingress.
+type IPAMConfiguration struct {
+	// IPv4IPAMPoolId defines the IPAM pool ID used for IPv4 Addresses on the ALB.
+	// +optional
+	IPv4IPAMPoolId *string `json:"ipv4IPAMPoolId,omitempty"`
+}
+
 // IngressClassParamsSpec defines the desired state of IngressClassParams
+// +kubebuilder:validation:XValidation:rule="!(has(self.prefixListsIDs) && has(self.PrefixListsIDs))", message="cannot specify both 'prefixListsIDs' and 'PrefixListsIDs' fields"
 type IngressClassParamsSpec struct {
+	// LoadBalancerName defines the name of the load balancer that will be created with this IngressClassParams.
+	// +optional
+	LoadBalancerName string `json:"loadBalancerName,omitempty"`
+
+	// CertificateArn specifies the ARN of the certificates for all Ingresses that belong to IngressClass with this IngressClassParams.
+	// +optional
+	CertificateArn []string `json:"certificateArn,omitempty"`
+
 	// NamespaceSelector restrict the namespaces of Ingresses that are allowed to specify the IngressClass with this IngressClassParams.
 	// * if absent or present but empty, it selects all namespaces.
 	// +optional
@@ -80,6 +138,22 @@ type IngressClassParamsSpec struct {
 	// +optional
 	Scheme *LoadBalancerScheme `json:"scheme,omitempty"`
 
+	// InboundCIDRs specifies the CIDRs that are allowed to access the Ingresses that belong to IngressClass with this IngressClassParams.
+	// +optional
+	InboundCIDRs []string `json:"inboundCIDRs,omitempty"`
+
+	// SSLPolicy specifies the SSL Policy for all Ingresses that belong to IngressClass with this IngressClassParams.
+	// +optional
+	SSLPolicy string `json:"sslPolicy,omitempty"`
+
+	// SSLRedirectPort specifies the SSL Redirect Port for all Ingresses that belong to IngressClass with this IngressClassParams.
+	// +optional
+	SSLRedirectPort string `json:"sslRedirectPort,omitempty"`
+
+	// Subnets defines the subnets for all Ingresses that belong to IngressClass with this IngressClassParams.
+	// +optional
+	Subnets *SubnetSelector `json:"subnets,omitempty"`
+
 	// IPAddressType defines the ip address type for all Ingresses that belong to IngressClass with this IngressClassParams.
 	// +optional
 	IPAddressType *IPAddressType `json:"ipAddressType,omitempty"`
@@ -87,13 +161,46 @@ type IngressClassParamsSpec struct {
 	// Tags defines list of Tags on AWS resources provisioned for Ingresses that belong to IngressClass with this IngressClassParams.
 	Tags []Tag `json:"tags,omitempty"`
 
+	// TargetType defines the target type of target groups for all Ingresses that belong to IngressClass with this IngressClassParams.
+	// +optional
+	TargetType TargetType `json:"targetType,omitempty"`
+
 	// LoadBalancerAttributes define the custom attributes to LoadBalancers for all Ingress that that belong to IngressClass with this IngressClassParams.
 	// +optional
 	LoadBalancerAttributes []Attribute `json:"loadBalancerAttributes,omitempty"`
+
+	// Listeners define a list of listeners with their protocol, port and attributes.
+	// +optional
+	Listeners []Listener `json:"listeners,omitempty"`
+
+	// MinimumLoadBalancerCapacity define the capacity reservation for LoadBalancers for all Ingress that belong to IngressClass with this IngressClassParams.
+	// +optional
+	MinimumLoadBalancerCapacity *MinimumLoadBalancerCapacity `json:"minimumLoadBalancerCapacity,omitempty"`
+
+	// IPAMConfiguration defines the IPAM settings for a Load Balancer.
+	// +optional
+	IPAMConfiguration *IPAMConfiguration `json:"ipamConfiguration,omitempty"`
+
+	// PrefixListsIDsLegacy defines the security group prefix lists for all Ingresses that belong to IngressClass with this IngressClassParams.
+	// Not Recommended, Use PrefixListsIDs (prefixListsIDs in JSON) instead
+	// +optional
+	PrefixListsIDsLegacy []string `json:"PrefixListsIDs,omitempty"`
+
+	// PrefixListsIDs defines the security group prefix lists for all Ingresses that belong to IngressClass with this IngressClassParams.
+	// +optional
+	PrefixListsIDs []string `json:"prefixListsIDs,omitempty"`
+
+	// WAFv2ACLArn specifies ARN for the Amazon WAFv2 web ACL.
+	// +optional
+	WAFv2ACLArn string `json:"wafv2AclArn"`
+
+	// WAFv2ACLName specifies name of the Amazon WAFv2 web ACL.
+	// +optional
+	WAFv2ACLName string `json:"wafv2AclName"`
 }
 
 // +kubebuilder:object:root=true
-// +kubebuilder:resource:scope=Cluster
+// +kubebuilder:resource:scope=Cluster,singular=ingressclassparam
 // +kubebuilder:storageversion
 // +kubebuilder:printcolumn:name="GROUP-NAME",type="string",JSONPath=".spec.group.name",description="The Ingress Group name"
 // +kubebuilder:printcolumn:name="SCHEME",type="string",JSONPath=".spec.scheme",description="The AWS Load Balancer scheme"

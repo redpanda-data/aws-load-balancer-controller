@@ -4,13 +4,22 @@ import (
 	"context"
 	"testing"
 
-	awssdk "github.com/aws/aws-sdk-go/aws"
+	"time"
+
+	awssdk "github.com/aws/aws-sdk-go-v2/aws"
+	elbv2sdk "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2"
+	elbv2types "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2/types"
+	"github.com/golang/mock/gomock"
 	"github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/aws-load-balancer-controller/pkg/aws/services"
+	"sigs.k8s.io/aws-load-balancer-controller/pkg/model/core"
 	elbv2model "sigs.k8s.io/aws-load-balancer-controller/pkg/model/elbv2"
+	"sigs.k8s.io/aws-load-balancer-controller/pkg/shared_utils"
 	testclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
@@ -78,7 +87,62 @@ func Test_defaultModelBuildTask_buildAuthenticateOIDCAction(t *testing.T) {
 					AuthenticationRequestExtraParams: map[string]string{
 						"key1": "value1",
 					},
-					OnUnauthenticatedRequest: &authBehaviorAuthenticate,
+					OnUnauthenticatedRequest: authBehaviorAuthenticate,
+					Scope:                    awssdk.String("email"),
+					SessionCookieName:        awssdk.String("my-session-cookie"),
+					SessionTimeout:           awssdk.Int64(65536),
+				},
+			},
+		},
+		{
+			name: "clientSecret has control characters at end",
+			env: env{
+				secrets: []*corev1.Secret{
+					{
+						ObjectMeta: metav1.ObjectMeta{
+							Namespace: "my-ns",
+							Name:      "my-k8s-secret",
+						},
+						Data: map[string][]byte{
+							"clientID":     []byte("my-client-id"),
+							"clientSecret": []byte("my-client-secret\n"),
+						},
+					},
+				},
+			},
+			args: args{
+				authCfg: AuthConfig{
+					Type: AuthTypeCognito,
+					IDPConfigOIDC: &AuthIDPConfigOIDC{
+						Issuer:                "https://example.com",
+						AuthorizationEndpoint: "https://authorization.example.com",
+						TokenEndpoint:         "https://token.example.com",
+						UserInfoEndpoint:      "https://userinfo.example.co",
+						SecretName:            "my-k8s-secret",
+						AuthenticationRequestExtraParams: map[string]string{
+							"key1": "value1",
+						},
+					},
+					OnUnauthenticatedRequest: "authenticate",
+					Scope:                    "email",
+					SessionCookieName:        "my-session-cookie",
+					SessionTimeout:           65536,
+				},
+				namespace: "my-ns",
+			},
+			want: elbv2model.Action{
+				Type: elbv2model.ActionTypeAuthenticateOIDC,
+				AuthenticateOIDCConfig: &elbv2model.AuthenticateOIDCActionConfig{
+					Issuer:                "https://example.com",
+					AuthorizationEndpoint: "https://authorization.example.com",
+					TokenEndpoint:         "https://token.example.com",
+					UserInfoEndpoint:      "https://userinfo.example.co",
+					ClientID:              "my-client-id",
+					ClientSecret:          "my-client-secret",
+					AuthenticationRequestExtraParams: map[string]string{
+						"key1": "value1",
+					},
+					OnUnauthenticatedRequest: authBehaviorAuthenticate,
 					Scope:                    awssdk.String("email"),
 					SessionCookieName:        awssdk.String("my-session-cookie"),
 					SessionTimeout:           awssdk.Int64(65536),
@@ -133,7 +197,7 @@ func Test_defaultModelBuildTask_buildAuthenticateOIDCAction(t *testing.T) {
 					AuthenticationRequestExtraParams: map[string]string{
 						"key1": "value1",
 					},
-					OnUnauthenticatedRequest: &authBehaviorAuthenticate,
+					OnUnauthenticatedRequest: authBehaviorAuthenticate,
 					Scope:                    awssdk.String("email"),
 					SessionCookieName:        awssdk.String("my-session-cookie"),
 					SessionTimeout:           awssdk.Int64(65536),
@@ -227,9 +291,9 @@ func Test_defaultModelBuildTask_buildAuthenticateOIDCAction(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			k8sClient := testclient.NewFakeClient()
-			k8sSchema := k8sClient.Scheme()
+			k8sSchema := runtime.NewScheme()
 			clientgoscheme.AddToScheme(k8sSchema)
+			k8sClient := testclient.NewClientBuilder().WithScheme(k8sSchema).Build()
 			for _, secret := range tt.env.secrets {
 				err := k8sClient.Create(context.Background(), secret.DeepCopy())
 				assert.NoError(t, err)
@@ -239,6 +303,104 @@ func Test_defaultModelBuildTask_buildAuthenticateOIDCAction(t *testing.T) {
 				k8sClient: k8sClient,
 			}
 			got, err := task.buildAuthenticateOIDCAction(context.Background(), tt.args.namespace, tt.args.authCfg)
+			if tt.wantErr != nil {
+				assert.EqualError(t, err, tt.wantErr.Error())
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, tt.want, got)
+			}
+		})
+	}
+}
+
+func Test_defaultModelBuildTask_buildJwtValidationAction(t *testing.T) {
+	type args struct {
+		jwtValidationConfig *JwtValidationConfig
+	}
+	tests := []struct {
+		name    string
+		args    args
+		want    *elbv2model.Action
+		wantErr error
+	}{
+		{
+			name: "gracefully handles nil config",
+			args: args{
+				jwtValidationConfig: nil,
+			},
+			want: nil,
+		},
+		{
+			name: "jwt validation with no additional claims",
+			args: args{
+				jwtValidationConfig: &JwtValidationConfig{
+					JwksEndpoint: "https://issuer.example.com/.well-known/jwks.json",
+					Issuer:       "https://issuer.com",
+				},
+			},
+			want: &elbv2model.Action{
+				Type: elbv2model.ActionTypeJwtValidation,
+				JwtValidationConfig: &elbv2model.JwtValidationConfig{
+					JwksEndpoint: "https://issuer.example.com/.well-known/jwks.json",
+					Issuer:       "https://issuer.com",
+				},
+			},
+		},
+		{
+			name: "jwt validation with additional claims",
+			args: args{
+				jwtValidationConfig: &JwtValidationConfig{
+					JwksEndpoint: "https://issuer.example.com/.well-known/jwks.json",
+					Issuer:       "https://issuer.com",
+					AdditionalClaims: []JwtAdditionalClaim{
+						{
+							Format: "string-array",
+							Name:   "scope",
+							Values: []string{"read:api", "write:api"},
+						},
+						{
+							Format: "single-string",
+							Name:   "iat",
+							Values: []string{"12456"},
+						},
+						{
+							Format: "space-separated-values",
+							Name:   "aud",
+							Values: []string{"https://example.com", "https://another-site.com"},
+						},
+					},
+				},
+			},
+			want: &elbv2model.Action{
+				Type: elbv2model.ActionTypeJwtValidation,
+				JwtValidationConfig: &elbv2model.JwtValidationConfig{
+					JwksEndpoint: "https://issuer.example.com/.well-known/jwks.json",
+					Issuer:       "https://issuer.com",
+					AdditionalClaims: []elbv2model.JwtAdditionalClaim{
+						{
+							Format: "string-array",
+							Name:   "scope",
+							Values: []string{"read:api", "write:api"},
+						},
+						{
+							Format: "single-string",
+							Name:   "iat",
+							Values: []string{"12456"},
+						},
+						{
+							Format: "space-separated-values",
+							Name:   "aud",
+							Values: []string{"https://example.com", "https://another-site.com"},
+						},
+					},
+				},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t1 *testing.T) {
+			task := &defaultModelBuildTask{}
+			got, err := task.buildJwtValidationAction(context.Background(), tt.args.jwtValidationConfig)
 			if tt.wantErr != nil {
 				assert.EqualError(t, err, tt.wantErr.Error())
 			} else {
@@ -281,6 +443,120 @@ func Test_defaultModelBuildTask_buildSSLRedirectAction(t *testing.T) {
 			task := &defaultModelBuildTask{}
 			got := task.buildSSLRedirectAction(context.Background(), tt.args.sslRedirectConfig)
 			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func Test_defaultModelBuildTask_buildForwardActionWithTargetGroupName(t *testing.T) {
+	type describeTargetGroupsAsListCall struct {
+		req  *elbv2sdk.DescribeTargetGroupsInput
+		resp []elbv2types.TargetGroup
+		err  error
+	}
+	type args struct {
+		ingress                         ClassifiedIngress
+		forwardActionConfig             ForwardActionConfig
+		describeTargetGroupsAsListCalls []describeTargetGroupsAsListCall
+		cache                           map[string]string
+	}
+	tests := []struct {
+		name      string
+		args      args
+		want      elbv2model.Action
+		wantErr   error
+		wantCache map[string]string
+	}{
+		{
+			name: "Forward to target group identified by name",
+			args: args{
+				forwardActionConfig: ForwardActionConfig{
+					TargetGroups: []TargetGroupTuple{{TargetGroupName: awssdk.String("tg-name1")}},
+				},
+
+				describeTargetGroupsAsListCalls: []describeTargetGroupsAsListCall{
+					{
+						req: &elbv2sdk.DescribeTargetGroupsInput{
+							Names: []string{"tg-name1"},
+						},
+						resp: []elbv2types.TargetGroup{
+							{
+								TargetGroupArn: awssdk.String("tg-arn1"),
+								TargetType:     elbv2types.TargetTypeEnum("instance"),
+							},
+						},
+					},
+				},
+				cache: map[string]string{},
+			},
+			want: elbv2model.Action{
+				Type: elbv2model.ActionTypeForward,
+				ForwardConfig: &elbv2model.ForwardActionConfig{
+					TargetGroups: []elbv2model.TargetGroupTuple{{
+						TargetGroupARN: core.LiteralStringToken("tg-arn1"),
+					}},
+				},
+			},
+			wantCache: map[string]string{
+				"tg-name1": "tg-arn1",
+			},
+		},
+		{
+			name: "Forward to target group identified by name is cached",
+			args: args{
+				forwardActionConfig: ForwardActionConfig{
+					TargetGroups: []TargetGroupTuple{{TargetGroupName: awssdk.String("tg-name2")}},
+				},
+
+				describeTargetGroupsAsListCalls: []describeTargetGroupsAsListCall{},
+				cache: map[string]string{
+					"tg-name2": "tg-arn2",
+				},
+			},
+			want: elbv2model.Action{
+				Type: elbv2model.ActionTypeForward,
+				ForwardConfig: &elbv2model.ForwardActionConfig{
+					TargetGroups: []elbv2model.TargetGroupTuple{{
+						TargetGroupARN: core.LiteralStringToken("tg-arn2"),
+					}},
+				},
+			},
+			wantCache: map[string]string{
+				"tg-name2": "tg-arn2",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t1 *testing.T) {
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			elbv2Client := services.NewMockELBV2(ctrl)
+			for _, call := range tt.args.describeTargetGroupsAsListCalls {
+				elbv2Client.EXPECT().DescribeTargetGroupsAsList(gomock.Any(), call.req).Return(call.resp, call.err)
+			}
+			task := &defaultModelBuildTask{
+				elbv2Client:                elbv2Client,
+				targetGroupNameToArnMapper: shared_utils.NewTargetGroupNameToArnMapper(elbv2Client),
+			}
+
+			for targetGroupName, cachedArn := range tt.args.cache {
+				task.targetGroupNameToArnMapper.GetCache().Set(targetGroupName, cachedArn, 10*time.Minute)
+			}
+
+			got, err := task.buildForwardAction(context.Background(), tt.args.ingress, Action{
+				Type:          ActionTypeForward,
+				ForwardConfig: &tt.args.forwardActionConfig,
+			})
+			assert.Equal(t, tt.want, got)
+			assert.Equal(t, tt.wantErr, err)
+			assert.Equal(t, len(tt.wantCache), task.targetGroupNameToArnMapper.GetCache().Len())
+			for targetGroupName, expectedArn := range tt.wantCache {
+				rawCacheItem, exists := task.targetGroupNameToArnMapper.GetCache().Get(targetGroupName)
+				assert.True(t, exists)
+				cachedArn := rawCacheItem.(string)
+				assert.Equal(t, expectedArn, cachedArn)
+			}
 		})
 	}
 }

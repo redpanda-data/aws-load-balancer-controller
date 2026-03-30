@@ -3,6 +3,7 @@ package elbv2
 import (
 	"context"
 	"encoding/json"
+
 	"github.com/pkg/errors"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/model/core"
 )
@@ -61,12 +62,14 @@ func (ls *Listener) registerDependencies(stack core.Stack) {
 type Protocol string
 
 const (
-	ProtocolHTTP    Protocol = "HTTP"
-	ProtocolHTTPS   Protocol = "HTTPS"
-	ProtocolTCP     Protocol = "TCP"
-	ProtocolTLS     Protocol = "TLS"
-	ProtocolUDP     Protocol = "UDP"
-	ProtocolTCP_UDP Protocol = "TCP_UDP"
+	ProtocolHTTP     Protocol = "HTTP"
+	ProtocolHTTPS    Protocol = "HTTPS"
+	ProtocolTCP      Protocol = "TCP"
+	ProtocolTLS      Protocol = "TLS"
+	ProtocolUDP      Protocol = "UDP"
+	ProtocolTCP_UDP  Protocol = "TCP_UDP"
+	ProtocolQUIC     Protocol = "QUIC"
+	ProtocolTCP_QUIC Protocol = "TCP_QUIC"
 )
 
 type ProtocolVersion string
@@ -85,8 +88,28 @@ const (
 	ActionTypeAuthenticateOIDC    ActionType = "authenticate-oidc"
 	ActionTypeFixedResponse       ActionType = "fixed-response"
 	ActionTypeForward             ActionType = "forward"
+	ActionTypeJwtValidation       ActionType = "jwt-validation"
 	ActionTypeRedirect            ActionType = "redirect"
 )
+
+// MutualAuthenticationMode mTLS mode for mutual TLS authentication config for listener
+type MutualAuthenticationMode string
+
+// Supported mTLS modes
+const (
+	MutualAuthenticationOffMode         MutualAuthenticationMode = "off"
+	MutualAuthenticationPassthroughMode MutualAuthenticationMode = "passthrough"
+	MutualAuthenticationVerifyMode      MutualAuthenticationMode = "verify"
+)
+
+type MutualAuthenticationAttributes struct {
+	Mode string `json:"mode"`
+
+	TrustStoreArn *string `json:"trustStoreArn,omitempty"`
+
+	IgnoreClientCertificateExpiry *bool   `json:"ignoreClientCertificateExpiry,omitempty"`
+	AdvertiseTrustStoreCaNames    *string `json:"advertiseTrustStoreCaNames,omitempty"`
+}
 
 type AuthenticateCognitoActionConditionalBehavior string
 
@@ -104,7 +127,7 @@ type AuthenticateCognitoActionConfig struct {
 
 	// The behavior if the user is not authenticated.
 	// +optional
-	OnUnauthenticatedRequest *AuthenticateCognitoActionConditionalBehavior `json:"onUnauthenticatedRequest,omitempty"`
+	OnUnauthenticatedRequest AuthenticateCognitoActionConditionalBehavior `json:"onUnauthenticatedRequest,omitempty"`
 
 	// The set of user claims to be requested from the IdP.
 	// +optional
@@ -144,7 +167,7 @@ type AuthenticateOIDCActionConfig struct {
 
 	// The behavior if the user is not authenticated.
 	// +optional
-	OnUnauthenticatedRequest *AuthenticateOIDCActionConditionalBehavior `json:"onUnauthenticatedRequest,omitempty"`
+	OnUnauthenticatedRequest AuthenticateOIDCActionConditionalBehavior `json:"onUnauthenticatedRequest,omitempty"`
 
 	// The set of user claims to be requested from the IdP.
 	// +optional
@@ -183,6 +206,36 @@ func (cfg AuthenticateOIDCActionConfig) MarshalJSON() ([]byte, error) {
 	redactedCfg.ClientID = "[REDACTED]"
 	redactedCfg.ClientSecret = "[REDACTED]"
 	return json.Marshal(redactedCfg)
+}
+
+// The format of an additional claim's value(s) used in JWT validation.
+type JwtAdditionalClaimFormat string
+
+const (
+	FormatSingleString         JwtAdditionalClaimFormat = "single-string"
+	FormatStringArray          JwtAdditionalClaimFormat = "string-array"
+	FormatSpaceSeparatedValues JwtAdditionalClaimFormat = "space-separated-values"
+)
+
+// An additional claim to validate during JWT validation.
+type JwtAdditionalClaim struct {
+	// The format of the claim value(s).
+	Format JwtAdditionalClaimFormat `json:"format"`
+	// The claim name.
+	Name string `json:"name"`
+	// The claim values.
+	Values []string `json:"values"`
+}
+
+// Information about an action that performs JSON Web Token (JWT) validation prior to the routing action.
+type JwtValidationConfig struct {
+	// The JSON Web Key Set (JWKS) endpoint containing the public keys used to verify the JWT.
+	JwksEndpoint string `json:"jwksEndpoint"`
+	// The issuer of the JWT.
+	Issuer string `json:"issuer"`
+	// Any additional claims in the JWT that should be validated.
+	// +optional
+	AdditionalClaims []JwtAdditionalClaim `json:"additionalClaims,omitempty"`
 }
 
 // Information about an action that returns a custom HTTP response.
@@ -234,7 +287,7 @@ type TargetGroupTuple struct {
 
 	// The weight.
 	// +optional
-	Weight *int64 `json:"weight,omitempty"`
+	Weight *int32 `json:"weight,omitempty"`
 }
 
 // Information about the target group stickiness for a rule.
@@ -245,7 +298,7 @@ type TargetGroupStickinessConfig struct {
 
 	// The time period, in seconds, during which requests from a client should be routed to the same target group.
 	// +optional
-	DurationSeconds *int64 `json:"durationSeconds,omitempty"`
+	DurationSeconds *int32 `json:"durationSeconds,omitempty"`
 }
 
 // Information about a forward action.
@@ -271,6 +324,10 @@ type Action struct {
 	// Information about an identity provider that is compliant with OpenID Connect (OIDC).
 	// +optional
 	AuthenticateOIDCConfig *AuthenticateOIDCActionConfig `json:"authenticateOIDCConfig,omitempty"`
+
+	// Information about an action that performs JSON Web Token (JWT) validation prior to the routing action.
+	// +optional
+	JwtValidationConfig *JwtValidationConfig `json:"jwtValidationConfig,omitempty"`
 
 	// [Application Load Balancer] Information for creating an action that returns a custom HTTP response.
 	// +optional
@@ -310,7 +367,7 @@ type ListenerSpec struct {
 	LoadBalancerARN core.StringToken `json:"loadBalancerARN"`
 
 	// The port on which the load balancer is listening.
-	Port int64 `json:"port"`
+	Port int32 `json:"port"`
 
 	// The protocol for connections from clients to the load balancer.
 	Protocol Protocol `json:"protocol"`
@@ -332,13 +389,26 @@ type ListenerSpec struct {
 	// +optional
 	ALPNPolicy []string `json:"alpnPolicy,omitempty"`
 
+	// [HTTPS listener] The mutual TLS authentication config for a secure ALB listener.
+	// +optional
+	MutualAuthentication *MutualAuthenticationAttributes `json:"mutualAuthentication,omitempty"`
+
 	// The tags.
 	// +optional
 	Tags map[string]string `json:"tags,omitempty"`
+
+	// Listener attributes
+	// +optional
+	ListenerAttributes []ListenerAttribute `json:"listenerAttributes,omitempty"`
 }
 
 // ListenerStatus defines the observed state of Listener
 type ListenerStatus struct {
 	// The Amazon Resource Name (ARN) of the listener.
 	ListenerARN string `json:"listenerARN"`
+}
+
+type ListenerAttribute struct {
+	Key   string `type:"string"`
+	Value string `type:"string"`
 }

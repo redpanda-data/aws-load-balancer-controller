@@ -2,8 +2,9 @@ package networking
 
 import (
 	"context"
+	"fmt"
 
-	awssdk "github.com/aws/aws-sdk-go/aws"
+	awssdk "github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
 	networking "k8s.io/api/networking/v1"
@@ -11,6 +12,7 @@ import (
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/annotations"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/config"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/ingress"
+	lbcmetrics "sigs.k8s.io/aws-load-balancer-controller/pkg/metrics/lbc"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/webhook"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -22,14 +24,16 @@ const (
 )
 
 // NewIngressValidator returns a validator for Ingress API.
-func NewIngressValidator(client client.Client, ingConfig config.IngressConfig, logger logr.Logger) *ingressValidator {
+func NewIngressValidator(client client.Client, ingConfig config.IngressConfig, logger logr.Logger, metricsCollector lbcmetrics.MetricCollector) *ingressValidator {
 	return &ingressValidator{
-		annotationParser:              annotations.NewSuffixAnnotationParser(annotations.AnnotationPrefixIngress),
-		classAnnotationMatcher:        ingress.NewDefaultClassAnnotationMatcher(ingConfig.IngressClass),
-		classLoader:                   ingress.NewDefaultClassLoader(client),
-		disableIngressClassAnnotation: ingConfig.DisableIngressClassAnnotation,
-		disableIngressGroupAnnotation: ingConfig.DisableIngressGroupNameAnnotation,
-		logger:                        logger,
+		annotationParser:                   annotations.NewSuffixAnnotationParser(annotations.AnnotationPrefixIngress),
+		classAnnotationMatcher:             ingress.NewDefaultClassAnnotationMatcher(ingConfig.IngressClass),
+		classLoader:                        ingress.NewDefaultClassLoader(client, false),
+		disableIngressClassAnnotation:      ingConfig.DisableIngressClassAnnotation,
+		disableIngressGroupAnnotation:      ingConfig.DisableIngressGroupNameAnnotation,
+		manageIngressesWithoutIngressClass: ingConfig.IngressClass == "",
+		logger:                             logger,
+		metricsCollector:                   metricsCollector,
 	}
 }
 
@@ -41,7 +45,11 @@ type ingressValidator struct {
 	classLoader                   ingress.ClassLoader
 	disableIngressClassAnnotation bool
 	disableIngressGroupAnnotation bool
-	logger                        logr.Logger
+	// manageIngressesWithoutIngressClass specifies whether ingresses without "kubernetes.io/ingress.class" annotation
+	// and "spec.ingressClassName" should be managed or not.
+	manageIngressesWithoutIngressClass bool
+	logger                             logr.Logger
+	metricsCollector                   lbcmetrics.MetricCollector
 }
 
 func (v *ingressValidator) Prototype(req admission.Request) (runtime.Object, error) {
@@ -50,13 +58,24 @@ func (v *ingressValidator) Prototype(req admission.Request) (runtime.Object, err
 
 func (v *ingressValidator) ValidateCreate(ctx context.Context, obj runtime.Object) error {
 	ing := obj.(*networking.Ingress)
+	if skip, err := v.checkIngressClass(ctx, ing); skip || err != nil {
+		v.metricsCollector.ObserveWebhookValidationError(apiPathValidateNetworkingIngress, "checkIngressClass")
+		return err
+	}
 	if err := v.checkIngressClassAnnotationUsage(ing, nil); err != nil {
+		v.metricsCollector.ObserveWebhookValidationError(apiPathValidateNetworkingIngress, "checkIngressClassAnnotationUsage")
 		return err
 	}
 	if err := v.checkGroupNameAnnotationUsage(ing, nil); err != nil {
+		v.metricsCollector.ObserveWebhookValidationError(apiPathValidateNetworkingIngress, "checkGroupNameAnnotationUsage")
 		return err
 	}
 	if err := v.checkIngressClassUsage(ctx, ing, nil); err != nil {
+		v.metricsCollector.ObserveWebhookValidationError(apiPathValidateNetworkingIngress, "checkIngressClassUsage")
+		return err
+	}
+	if err := v.checkIngressAnnotationConditions(ing); err != nil {
+		v.metricsCollector.ObserveWebhookValidationError(apiPathValidateNetworkingIngress, "checkIngressAnnotationConditions")
 		return err
 	}
 	return nil
@@ -65,13 +84,24 @@ func (v *ingressValidator) ValidateCreate(ctx context.Context, obj runtime.Objec
 func (v *ingressValidator) ValidateUpdate(ctx context.Context, obj runtime.Object, oldObj runtime.Object) error {
 	ing := obj.(*networking.Ingress)
 	oldIng := oldObj.(*networking.Ingress)
+	if skip, err := v.checkIngressClass(ctx, ing); skip || err != nil {
+		v.metricsCollector.ObserveWebhookValidationError(apiPathValidateNetworkingIngress, "checkIngressClass")
+		return err
+	}
 	if err := v.checkIngressClassAnnotationUsage(ing, oldIng); err != nil {
+		v.metricsCollector.ObserveWebhookValidationError(apiPathValidateNetworkingIngress, "checkIngressClassAnnotationUsage")
 		return err
 	}
 	if err := v.checkGroupNameAnnotationUsage(ing, oldIng); err != nil {
+		v.metricsCollector.ObserveWebhookValidationError(apiPathValidateNetworkingIngress, "checkGroupNameAnnotationUsage")
 		return err
 	}
 	if err := v.checkIngressClassUsage(ctx, ing, oldIng); err != nil {
+		v.metricsCollector.ObserveWebhookValidationError(apiPathValidateNetworkingIngress, "checkIngressClassUsage")
+		return err
+	}
+	if err := v.checkIngressAnnotationConditions(ing); err != nil {
+		v.metricsCollector.ObserveWebhookValidationError(apiPathValidateNetworkingIngress, "checkIngressAnnotationConditions")
 		return err
 	}
 	return nil
@@ -79,6 +109,21 @@ func (v *ingressValidator) ValidateUpdate(ctx context.Context, obj runtime.Objec
 
 func (v *ingressValidator) ValidateDelete(ctx context.Context, obj runtime.Object) error {
 	return nil
+}
+
+// checkIngressClass checks to see if this ingress is handled by this controller.
+func (v *ingressValidator) checkIngressClass(ctx context.Context, ing *networking.Ingress) (bool, error) {
+	if ingClassAnnotation, exists := ing.Annotations[annotations.IngressClass]; exists {
+		return !v.classAnnotationMatcher.Matches(ingClassAnnotation), nil
+	}
+	classConfiguration, err := v.classLoader.Load(ctx, ing)
+	if err != nil {
+		return false, err
+	}
+	if classConfiguration.IngClass != nil {
+		return classConfiguration.IngClass.Spec.Controller != ingress.IngressClassControllerALB, nil
+	}
+	return !v.manageIngressesWithoutIngressClass, nil
 }
 
 // checkIngressClassAnnotationUsage checks the usage of kubernetes.io/ingress.class annotation.
@@ -146,11 +191,11 @@ func (v *ingressValidator) checkIngressClassUsage(ctx context.Context, ing *netw
 
 	if ing.Spec.IngressClassName != nil {
 		usedInNewIng = true
-		newIngressClassName = awssdk.StringValue(ing.Spec.IngressClassName)
+		newIngressClassName = awssdk.ToString(ing.Spec.IngressClassName)
 	}
 	if oldIng != nil && oldIng.Spec.IngressClassName != nil {
 		usedInOldIng = true
-		oldIngressClassName = awssdk.StringValue(oldIng.Spec.IngressClassName)
+		oldIngressClassName = awssdk.ToString(oldIng.Spec.IngressClassName)
 	}
 
 	if usedInNewIng {
@@ -164,8 +209,38 @@ func (v *ingressValidator) checkIngressClassUsage(ctx context.Context, ing *netw
 	return nil
 }
 
+// checkGroupNameAnnotationUsage checks the validity of "conditions.${conditions-name}" annotation.
+func (v *ingressValidator) checkIngressAnnotationConditions(ing *networking.Ingress) error {
+	for _, rule := range ing.Spec.Rules {
+		if rule.HTTP == nil {
+			continue
+		}
+		for _, path := range rule.HTTP.Paths {
+			var conditions []ingress.RuleCondition
+			annotationKey := fmt.Sprintf("conditions.%v", path.Backend.Service.Name)
+			_, err := v.annotationParser.ParseJSONAnnotation(annotationKey, &conditions, ing.Annotations)
+			if err != nil {
+				return err
+			}
+
+			for _, condition := range conditions {
+				if err := condition.Validate(); err != nil {
+					return fmt.Errorf("ignoring Ingress %s/%s since invalid alb.ingress.kubernetes.io/conditions.%s annotation: %w",
+						ing.Namespace,
+						ing.Name,
+						path.Backend.Service.Name,
+						err,
+					)
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
 // +kubebuilder:webhook:path=/validate-networking-v1-ingress,mutating=false,failurePolicy=fail,groups=networking.k8s.io,resources=ingresses,verbs=create;update,versions=v1,name=vingress.elbv2.k8s.aws,sideEffects=None,matchPolicy=Equivalent,webhookVersions=v1,admissionReviewVersions=v1beta1
 
 func (v *ingressValidator) SetupWithManager(mgr ctrl.Manager) {
-	mgr.GetWebhookServer().Register(apiPathValidateNetworkingIngress, webhook.ValidatingWebhookForValidator(mgr.GetScheme(), v))
+	mgr.GetWebhookServer().Register(apiPathValidateNetworkingIngress, webhook.ValidatingWebhookForValidator(v, mgr.GetScheme()))
 }

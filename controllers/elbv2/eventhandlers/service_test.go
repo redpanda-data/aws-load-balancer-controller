@@ -2,9 +2,8 @@ package eventhandlers
 
 import (
 	"context"
-	"testing"
-
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"testing"
 
 	"github.com/go-logr/logr"
 	"github.com/golang/mock/gomock"

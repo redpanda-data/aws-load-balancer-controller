@@ -2,12 +2,14 @@ package k8s
 
 import (
 	"errors"
+	"testing"
+	"time"
+
 	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"testing"
 )
 
 func TestPodInfo_HasAnyOfReadinessGates(t *testing.T) {
@@ -149,6 +151,7 @@ func TestPodInfo_GetPodCondition(t *testing.T) {
 	type args struct {
 		conditionType corev1.PodConditionType
 	}
+
 	tests := []struct {
 		name       string
 		pod        PodInfo
@@ -312,6 +315,11 @@ func Test_buildPodInfo(t *testing.T) {
 	type args struct {
 		pod *corev1.Pod
 	}
+
+	timeNow := time.Now()
+
+	initContainerRestartPolicyAlways := corev1.ContainerRestartPolicyAlways
+
 	tests := []struct {
 		name string
 		args args
@@ -325,6 +333,9 @@ func Test_buildPodInfo(t *testing.T) {
 						Namespace: "my-ns",
 						Name:      "pod-1",
 						UID:       "pod-uuid",
+						CreationTimestamp: metav1.Time{
+							Time: timeNow,
+						},
 					},
 					Spec: corev1.PodSpec{
 						NodeName: "ip-192-168-13-198.us-west-2.compute.internal",
@@ -346,6 +357,29 @@ func Test_buildPodInfo(t *testing.T) {
 									{
 										Name:          "https",
 										ContainerPort: 8443,
+									},
+								},
+							},
+						},
+						InitContainers: []corev1.Container{
+							{
+								RestartPolicy: &initContainerRestartPolicyAlways,
+								Ports: []corev1.ContainerPort{
+									{
+										Name:          "dns",
+										ContainerPort: 53,
+									},
+									{
+										Name:          "ftp",
+										ContainerPort: 21,
+									},
+								},
+							},
+							{
+								Ports: []corev1.ContainerPort{
+									{
+										Name:          "smtp",
+										ContainerPort: 25,
 									},
 								},
 							},
@@ -390,6 +424,14 @@ func Test_buildPodInfo(t *testing.T) {
 						Name:          "https",
 						ContainerPort: 8443,
 					},
+					{
+						Name:          "dns",
+						ContainerPort: 53,
+					},
+					{
+						Name:          "ftp",
+						ContainerPort: 21,
+					},
 				},
 				ReadinessGates: []corev1.PodReadinessGate{
 					{
@@ -409,8 +451,9 @@ func Test_buildPodInfo(t *testing.T) {
 						Status: corev1.ConditionTrue,
 					},
 				},
-				NodeName: "ip-192-168-13-198.us-west-2.compute.internal",
-				PodIP:    "192.168.1.1",
+				NodeName:     "ip-192-168-13-198.us-west-2.compute.internal",
+				PodIP:        "192.168.1.1",
+				CreationTime: metav1.Time{Time: timeNow},
 			},
 		},
 		{
@@ -424,6 +467,9 @@ func Test_buildPodInfo(t *testing.T) {
 						Annotations: map[string]string{
 							"vpc.amazonaws.com/pod-eni": `[{"eniId":"eni-06a712e1622fda4a0","ifAddress":"02:34:a5:25:0b:63","privateIp":"192.168.219.103","vlanId":3,"subnetCidr":"192.168.192.0/19"}]`,
 						},
+						CreationTimestamp: metav1.Time{
+							Time: timeNow,
+						},
 					},
 					Spec: corev1.PodSpec{
 						NodeName: "ip-192-168-13-198.us-west-2.compute.internal",
@@ -445,6 +491,29 @@ func Test_buildPodInfo(t *testing.T) {
 									{
 										Name:          "https",
 										ContainerPort: 8443,
+									},
+								},
+							},
+						},
+						InitContainers: []corev1.Container{
+							{
+								RestartPolicy: &initContainerRestartPolicyAlways,
+								Ports: []corev1.ContainerPort{
+									{
+										Name:          "dns",
+										ContainerPort: 53,
+									},
+									{
+										Name:          "ftp",
+										ContainerPort: 21,
+									},
+								},
+							},
+							{
+								Ports: []corev1.ContainerPort{
+									{
+										Name:          "smtp",
+										ContainerPort: 25,
 									},
 								},
 							},
@@ -489,6 +558,14 @@ func Test_buildPodInfo(t *testing.T) {
 						Name:          "https",
 						ContainerPort: 8443,
 					},
+					{
+						Name:          "dns",
+						ContainerPort: 53,
+					},
+					{
+						Name:          "ftp",
+						ContainerPort: 21,
+					},
 				},
 				ReadinessGates: []corev1.PodReadinessGate{
 					{
@@ -508,8 +585,9 @@ func Test_buildPodInfo(t *testing.T) {
 						Status: corev1.ConditionTrue,
 					},
 				},
-				NodeName: "ip-192-168-13-198.us-west-2.compute.internal",
-				PodIP:    "192.168.1.1",
+				NodeName:     "ip-192-168-13-198.us-west-2.compute.internal",
+				PodIP:        "192.168.1.1",
+				CreationTime: metav1.Time{Time: timeNow},
 				ENIInfos: []PodENIInfo{
 					{
 						ENIID:     "eni-06a712e1622fda4a0",
@@ -521,7 +599,7 @@ func Test_buildPodInfo(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := buildPodInfo(tt.args.pod)
+			got := newPodInfoBuilder("").buildPodInfo(tt.args.pod)
 			assert.Equal(t, tt.want, got)
 		})
 	}
@@ -582,7 +660,7 @@ func Test_buildPodENIInfo(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := buildPodENIInfos(tt.args.pod)
+			got, err := newPodInfoBuilder("").buildPodENIInfos(tt.args.pod)
 			if tt.wantErr != nil {
 				assert.EqualError(t, err, tt.wantErr.Error())
 			} else {

@@ -14,49 +14,80 @@ You can add annotations to kubernetes Ingress and Service objects to customize t
         - Merge: such annotation can be specified on all Ingresses within IngressGroup, and will be merged together.
 
 ## Annotations
-|Name                       | Type |Default|Location|MergeBehavior|
-|---------------------------|------|-------|--------|------|
-|[alb.ingress.kubernetes.io/load-balancer-name](#load-balancer-name)|string|N/A|Ingress|Exclusive|
-|[alb.ingress.kubernetes.io/group.name](#group.name)|string|N/A|Ingress|N/A|
-|[alb.ingress.kubernetes.io/group.order](#group.order)|integer|0|Ingress|N/A|
-|[alb.ingress.kubernetes.io/tags](#tags)|stringMap|N/A|Ingress,Service|Merge|
-|[alb.ingress.kubernetes.io/ip-address-type](#ip-address-type)|ipv4 \| dualstack|ipv4|Ingress|Exclusive|
-|[alb.ingress.kubernetes.io/scheme](#scheme)|internal \| internet-facing|internal|Ingress|Exclusive|
-|[alb.ingress.kubernetes.io/subnets](#subnets)|stringList|N/A|Ingress|Exclusive|
-|[alb.ingress.kubernetes.io/security-groups](#security-groups)|stringList|N/A|Ingress|Exclusive|
-|[alb.ingress.kubernetes.io/manage-backend-security-group-rules](#manage-backend-security-group-rules)|boolean|N/A|Ingress|Exclusive|
-|[alb.ingress.kubernetes.io/customer-owned-ipv4-pool](#customer-owned-ipv4-pool)|string|N/A|Ingress|Exclusive|
-|[alb.ingress.kubernetes.io/load-balancer-attributes](#load-balancer-attributes)|stringMap|N/A|Ingress|Exclusive|
-|[alb.ingress.kubernetes.io/wafv2-acl-arn](#wafv2-acl-arn)|string|N/A|Ingress|Exclusive|
-|[alb.ingress.kubernetes.io/waf-acl-id](#waf-acl-id)|string|N/A|Ingress|Exclusive|
-|[alb.ingress.kubernetes.io/shield-advanced-protection](#shield-advanced-protection)|boolean|N/A|Ingress|Exclusive|
-|[alb.ingress.kubernetes.io/listen-ports](#listen-ports)|json|'[{"HTTP": 80}]' \| '[{"HTTPS": 443}]'|Ingress|Merge|
-|[alb.ingress.kubernetes.io/ssl-redirect](#ssl-redirect)|integer|N/A|Ingress|Exclusive|
-|[alb.ingress.kubernetes.io/inbound-cidrs](#inbound-cidrs)|stringList|0.0.0.0/0, ::/0|Ingress|Exclusive|
-|[alb.ingress.kubernetes.io/certificate-arn](#certificate-arn)|stringList|N/A|Ingress|Merge|
-|[alb.ingress.kubernetes.io/ssl-policy](#ssl-policy)|string|ELBSecurityPolicy-2016-08|Ingress|Exclusive|
-|[alb.ingress.kubernetes.io/target-type](#target-type)|instance \| ip|instance|Ingress,Service|N/A|
-|[alb.ingress.kubernetes.io/backend-protocol](#backend-protocol)|HTTP \| HTTPS|HTTP|Ingress,Service|N/A|
-|[alb.ingress.kubernetes.io/backend-protocol-version](#backend-protocol-version)|string | HTTP1 |Ingress,Service|N/A|
-|[alb.ingress.kubernetes.io/target-group-attributes](#target-group-attributes)|stringMap|N/A|Ingress,Service|N/A|
-|[alb.ingress.kubernetes.io/healthcheck-port](#healthcheck-port)|integer \| traffic-port|traffic-port|Ingress,Service|N/A|
-|[alb.ingress.kubernetes.io/healthcheck-protocol](#healthcheck-protocol)|HTTP \| HTTPS|HTTP|Ingress,Service|N/A|
-|[alb.ingress.kubernetes.io/healthcheck-path](#healthcheck-path)|string|/ \| /AWS.ALB/healthcheck |Ingress,Service|N/A|
-|[alb.ingress.kubernetes.io/healthcheck-interval-seconds](#healthcheck-interval-seconds)|integer|'15'|Ingress,Service|N/A|
-|[alb.ingress.kubernetes.io/healthcheck-timeout-seconds](#healthcheck-timeout-seconds)|integer|'5'|Ingress,Service|N/A|
-|[alb.ingress.kubernetes.io/healthy-threshold-count](#healthy-threshold-count)|integer|'2'|Ingress,Service|N/A|
-|[alb.ingress.kubernetes.io/unhealthy-threshold-count](#unhealthy-threshold-count)|integer|'2'|Ingress,Service|N/A|
-|[alb.ingress.kubernetes.io/success-codes](#success-codes)|string|'200' \| '12' |Ingress,Service|N/A|
-|[alb.ingress.kubernetes.io/auth-type](#auth-type)|none\|oidc\|cognito|none|Ingress,Service|N/A|
-|[alb.ingress.kubernetes.io/auth-idp-cognito](#auth-idp-cognito)|json|N/A|Ingress,Service|N/A|
-|[alb.ingress.kubernetes.io/auth-idp-oidc](#auth-idp-oidc)|json|N/A|Ingress,Service|N/A|
-|[alb.ingress.kubernetes.io/auth-on-unauthenticated-request](#auth-on-unauthenticated-request)|authenticate\|allow\|deny|authenticate|Ingress,Service|N/A|
-|[alb.ingress.kubernetes.io/auth-scope](#auth-scope)|string|openid|Ingress,Service|N/A|
-|[alb.ingress.kubernetes.io/auth-session-cookie](#auth-session-cookie)|string|AWSELBAuthSessionCookie|Ingress,Service|N/A|
-|[alb.ingress.kubernetes.io/auth-session-timeout](#auth-session-timeout)|integer|'604800'|Ingress,Service|N/A|
-|[alb.ingress.kubernetes.io/actions.${action-name}](#actions)|json|N/A|Ingress|N/A|
-|[alb.ingress.kubernetes.io/conditions.${conditions-name}](#conditions)|json|N/A|Ingress|N/A|
-|[alb.ingress.kubernetes.io/target-node-labels](#target-node-labels)|stringMap|N/A|Ingress,Service|N/A|
+
+!!!question "EKS Auto Mode users"
+    If you are using EKS Auto Mode, please see the
+    [EKS Auto Mode documentation](https://docs.aws.amazon.com/eks/latest/userguide/auto-configure-alb.html#_considerations)
+    for key differences between the load balancing capability of EKS Auto Mode and the open source load balancer controller.
+
+| Name                                                                                                  | Type                                               |Default| Location        | MergeBehavior |
+|-------------------------------------------------------------------------------------------------------|----------------------------------------------------|------|-----------------|---------------|
+| [alb.ingress.kubernetes.io/load-balancer-name](#load-balancer-name)                                   | string                                             |N/A| Ingress         | Exclusive     |
+| [alb.ingress.kubernetes.io/group.name](#group.name)                                                   | string                                             |N/A| Ingress         | N/A           |
+| [alb.ingress.kubernetes.io/group.order](#group.order)                                                 | integer                                            |0| Ingress         | N/A           |
+| [alb.ingress.kubernetes.io/tags](#tags)                                                               | stringMap                                          |N/A| Ingress,Service | Merge         |
+| [alb.ingress.kubernetes.io/ip-address-type](#ip-address-type)                                         | ipv4 \| dualstack \|  dualstack-without-public-ipv4 |ipv4| Ingress         | Exclusive     |
+| [alb.ingress.kubernetes.io/scheme](#scheme)                                                           | internal \| internet-facing                        |internal| Ingress         | Exclusive     |
+| [alb.ingress.kubernetes.io/subnets](#subnets)                                                         | stringList                                         |N/A| Ingress         | Exclusive     |
+| [alb.ingress.kubernetes.io/security-groups](#security-groups)                                         | stringList                                         |N/A| Ingress         | Exclusive     |
+| [alb.ingress.kubernetes.io/manage-backend-security-group-rules](#manage-backend-security-group-rules) | boolean                                            |N/A| Ingress         | Exclusive     |
+| [alb.ingress.kubernetes.io/customer-owned-ipv4-pool](#customer-owned-ipv4-pool)                       | string                                             |N/A| Ingress         | Exclusive     |
+| [alb.ingress.kubernetes.io/load-balancer-attributes](#load-balancer-attributes)                       | stringMap                                          |N/A| Ingress         | Exclusive     |
+| [alb.ingress.kubernetes.io/wafv2-acl-arn](#wafv2-acl-arn)                                             | string                                             |N/A| Ingress         | Exclusive     |
+| [alb.ingress.kubernetes.io/waf-acl-id](#waf-acl-id)                                                   | string                                             |N/A| Ingress         | Exclusive     |
+| [alb.ingress.kubernetes.io/shield-advanced-protection](#shield-advanced-protection)                   | boolean                                            |N/A| Ingress         | Exclusive     |
+| [alb.ingress.kubernetes.io/listen-ports](#listen-ports)                                               | json                                               |'[{"HTTP": 80}]' \| '[{"HTTPS": 443}]'| Ingress         | Merge         |
+| [alb.ingress.kubernetes.io/ssl-redirect](#ssl-redirect)                                               | integer                                            |N/A| Ingress         | Exclusive     |
+| [alb.ingress.kubernetes.io/inbound-cidrs](#inbound-cidrs)                                             | stringList                                         |0.0.0.0/0, ::/0| Ingress         | Exclusive     |
+| [alb.ingress.kubernetes.io/security-group-prefix-lists](#security-group-prefix-lists)                                               | stringList                                         |pl-00000000, pl-1111111| Ingress         | Exclusive     |
+| [alb.ingress.kubernetes.io/certificate-arn](#certificate-arn)                                         | stringList                                         |N/A| Ingress         | Merge         |
+| [alb.ingress.kubernetes.io/ssl-policy](#ssl-policy)                                                   | string                                             |ELBSecurityPolicy-2016-08| Ingress         | Exclusive     |
+| [alb.ingress.kubernetes.io/target-type](#target-type)                                                 | instance \| ip                                     |instance| Ingress,Service | N/A           |
+| [alb.ingress.kubernetes.io/backend-protocol](#backend-protocol)                                       | HTTP \| HTTPS                                      |HTTP| Ingress,Service | N/A           |
+| [alb.ingress.kubernetes.io/backend-protocol-version](#backend-protocol-version)                       | string                                             | HTTP1 | Ingress,Service | N/A           |
+| [alb.ingress.kubernetes.io/target-group-attributes](#target-group-attributes)                         | stringMap                                          |N/A| Ingress,Service | N/A           |
+| [alb.ingress.kubernetes.io/healthcheck-port](#healthcheck-port)                                       | integer \| traffic-port                            |traffic-port| Ingress,Service | N/A           |
+| [alb.ingress.kubernetes.io/healthcheck-protocol](#healthcheck-protocol)                               | HTTP \| HTTPS                                      |HTTP| Ingress,Service | N/A           |
+| [alb.ingress.kubernetes.io/healthcheck-path](#healthcheck-path)                                       | string                                             |/ \| /AWS.ALB/healthcheck | Ingress,Service | N/A           |
+| [alb.ingress.kubernetes.io/healthcheck-interval-seconds](#healthcheck-interval-seconds)               | integer                                            |'15'| Ingress,Service | N/A           |
+| [alb.ingress.kubernetes.io/healthcheck-timeout-seconds](#healthcheck-timeout-seconds)                 | integer                                            |'5'| Ingress,Service | N/A           |
+| [alb.ingress.kubernetes.io/healthy-threshold-count](#healthy-threshold-count)                         | integer                                            |'2'| Ingress,Service | N/A           |
+| [alb.ingress.kubernetes.io/unhealthy-threshold-count](#unhealthy-threshold-count)                     | integer                                            |'2'| Ingress,Service | N/A           |
+| [alb.ingress.kubernetes.io/success-codes](#success-codes)                                             | string                                             |'200' \| '12' | Ingress,Service | N/A           |
+| [alb.ingress.kubernetes.io/auth-type](#auth-type)                                                     | none\|oidc\|cognito                                |none| Ingress,Service | N/A           |
+| [alb.ingress.kubernetes.io/auth-idp-cognito](#auth-idp-cognito)                                       | json                                               |N/A| Ingress,Service | N/A           |
+| [alb.ingress.kubernetes.io/auth-idp-oidc](#auth-idp-oidc)                                             | json                                               |N/A| Ingress,Service | N/A           |
+| [alb.ingress.kubernetes.io/auth-on-unauthenticated-request](#auth-on-unauthenticated-request)         | authenticate\|allow\|deny                          |authenticate| Ingress,Service | N/A           |
+| [alb.ingress.kubernetes.io/auth-scope](#auth-scope)                                                   | string                                             |openid| Ingress,Service | N/A           |
+| [alb.ingress.kubernetes.io/auth-session-cookie](#auth-session-cookie)                                 | string                                             |AWSELBAuthSessionCookie| Ingress,Service | N/A           |
+| [alb.ingress.kubernetes.io/auth-session-timeout](#auth-session-timeout)                               | integer                                            |'604800'| Ingress,Service | N/A           |
+| [alb.ingress.kubernetes.io/jwt-validation](#jwt-validation)                               | json                                            |N/A| Ingress | N/A           |
+| [alb.ingress.kubernetes.io/actions.${action-name}](#actions)                                          | json                                               |N/A| Ingress         | N/A           |
+| [alb.ingress.kubernetes.io/transforms.${transforms-name}](#transforms)                                | json                                               |N/A| Ingress         | N/A           |
+| [alb.ingress.kubernetes.io/conditions.${conditions-name}](#conditions)                                | json                                               |N/A| Ingress         | N/A           |
+| [alb.ingress.kubernetes.io/use-regex-path-match](#use-regex-path-match)                               | boolean                                            |N/A| Ingress         | false         |
+| [alb.ingress.kubernetes.io/target-node-labels](#target-node-labels)                                   | stringMap                                          |N/A| Ingress,Service | N/A           |
+| [alb.ingress.kubernetes.io/mutual-authentication](#mutual-authentication)                             | json                                               |N/A| Ingress         | Exclusive     |
+| [alb.ingress.kubernetes.io/multi-cluster-target-group](#multi-cluster-target-group)                   | boolean                                            |N/A| Ingress, Service | N/A           |
+| [alb.ingress.kubernetes.io/listener-attributes.${Protocol}-${Port}](#listener-attributes)                           | stringMap                                          |N/A| Ingress         |Merge|
+| [alb.ingress.kubernetes.io/minimum-load-balancer-capacity](#load-balancer-capacity-reservation)                       | stringMap                                          |N/A| Ingress         | Exclusive     |
+| [alb.ingress.kubernetes.io/ipam-ipv4-pool-id](#ipam-ipv4-pool-id)                       | string                                             |N/A| Ingress         | Exclusive     |
+| [alb.ingress.kubernetes.io/enable-frontend-nlb](#enable-frontend-nlb)                                 | boolean                                            |false | Ingress         | Exclusive     |
+| [alb.ingress.kubernetes.io/frontend-nlb-scheme](#frontend-nlb-scheme)                                 | internal \| internet-facing                        |internal| Ingress         | Exclusive     |
+| [alb.ingress.kubernetes.io/frontend-nlb-subnets](#frontend-nlb-subnets)                               | stringList                                         |N/A| Ingress         | Exclusive     |
+| [alb.ingress.kubernetes.io/frontend-nlb-security-groups](#frontend-nlb-security-groups)               | stringList                                         |N/A| Ingress         | Exclusive     |
+| [alb.ingress.kubernetes.io/frontend-nlb-listener-port-mapping](#frontend-nlb-listener-port-mapping)   | stringMap                                               |N/A| Ingress         | Merge         |
+| [alb.ingress.kubernetes.io/frontend-nlb-healthcheck-port](#frontend-nlb-healthcheck-port)             | integer \| traffic-port                            |traffic-port| Ingress | N/A           |
+| [alb.ingress.kubernetes.io/frontend-nlb-healthcheck-protocol](#frontend-nlb-healthcheck-protocol)     | HTTP \| HTTPS                                      |HTTP| Ingress | N/A           |
+| [alb.ingress.kubernetes.io/frontend-nlb-healthcheck-path](#frontend-nlb-healthcheck-path)             | string                                             |/| Ingress | N/A           |
+| [alb.ingress.kubernetes.io/frontend-nlb-healthcheck-interval-seconds](#frontend-nlb-healthcheck-interval-seconds) | integer                                   |15| Ingress | N/A           |
+| [alb.ingress.kubernetes.io/frontend-nlb-healthcheck-timeout-seconds](#frontend-nlb-healthcheck-timeout-seconds) | integer                                     |5| Ingress | N/A           |
+| [alb.ingress.kubernetes.io/frontend-nlb-healthcheck-healthy-threshold-count](#frontend-nlb-healthcheck-healthy-threshold-count) | integer                         |3| Ingress | N/A           |
+| [alb.ingress.kubernetes.io/frontend-nlb-healthcheck-unhealthy-threshold-count](#frontend-nlb-healthcheck-unhealthy-threshold-count) | integer                     |3| Ingress | N/A           |
+| [alb.ingress.kubernetes.io/frontend-nlb-healthcheck-success-codes](#frontend-nlb-healthcheck-success-codes) | string                                     |200| Ingress | N/A           |
+| [alb.ingress.kubernetes.io/frontend-nlb-tags](#frontend-nlb-tags) | stringMap | N/A | Ingress | Exclusive |
+| [alb.ingress.kubernetes.io/frontend-nlb-eip-allocations](#frontend-nlb-eip-allocations) | stringList                                     |200| Ingress | N/A           |
+| [alb.ingress.kubernetes.io/target-control-port.${serviceName}.${servicePort}](#target-control-port)                                       | integer                                    |N/A| Ingress | N/A           |
 
 ## IngressGroup
 IngressGroup feature enables you to group multiple Ingress resources together.
@@ -79,6 +110,13 @@ By default, Ingresses don't belong to any IngressGroup, and we treat it as a "im
         other Kubernetes users may create/modify their Ingresses to belong to the same IngressGroup, and can thus add more rules or overwrite existing rules with higher priority to the ALB for your Ingress.
 
         We'll add more fine-grained access-control in future versions.
+
+    !!!note "Rename behavior"
+        The ALB for an IngressGroup is found by searching for an AWS tag `ingress.k8s.aws/stack` tag with the name of the IngressGroup as its value. For an implicit IngressGroup, the value is `namespace/ingressname`.
+
+        When the groupName of an IngressGroup for an Ingress is changed, the Ingress will be moved to a new IngressGroup and be supported by the ALB for the new IngressGroup. If the ALB for the new IngressGroup doesn't exist, a new ALB will be created.
+
+        If an IngressGroup no longer contains any Ingresses, the ALB for that IngressGroup will be deleted and any deletion protection of that ALB will be ignored.
 
     !!!example
         ```
@@ -162,6 +200,10 @@ Traffic Routing can be controlled with following annotations:
 
         - Once defined on a single Ingress, it impacts every Ingress within the IngressGroup.
 
+    !!!note "Annotation Behavior"
+
+        - This annotation **takes effect only during the creation** of the Ingress. If the Ingress already exists, the change will not be applied until the Ingress is **deleted and recreated**.
+
     !!!example
         ```
         alb.ingress.kubernetes.io/load-balancer-name: custom-name
@@ -218,7 +260,10 @@ Traffic Routing can be controlled with following annotations:
 - <a name="subnets">`alb.ingress.kubernetes.io/subnets`</a> specifies the [Availability Zone](http://docs.aws.amazon.com/AWSEC2/latest/UserGuide/using-regions-availability-zones.html)s that the ALB will route traffic to. See [Load Balancer subnets](https://docs.aws.amazon.com/elasticloadbalancing/latest/application/load-balancer-subnets.html) for more details.
 
     !!!note ""
-        You must specify at least two subnets in different AZs. Either subnetID or subnetName(Name tag on subnets) can be used.
+        You must specify at least two subnets in different AZs unless utilizing the outpost locale, in which case a single subnet suffices. Either subnetID or subnetName(Name tag on subnets) can be used.
+
+    !!!note ""
+        You must not mix subnets from different locales: availability-zone, local-zone, wavelength-zone, outpost.
 
     !!!tip
         You can enable subnet auto discovery to avoid specifying this annotation on every Ingress. See [Subnet Discovery](../../deploy/subnet_discovery.md) for instructions.
@@ -228,22 +273,37 @@ Traffic Routing can be controlled with following annotations:
         alb.ingress.kubernetes.io/subnets: subnet-xxxx, mySubnet
         ```
 
+- <a name="ipam-ipv4-pool-id">`alb.ingress.kubernetes.io/ipam-ipv4-pool-id`</a> Specifies the [IPv4 IPAM Pool ID](https://docs.aws.amazon.com/vpc/latest/ipam/tutorials-byoip-ipam-console-ipv4.html) which will be used by your load balancer to assign IP addresses.
+
+  !!!note ""
+  The chosen IPAM pool is always the prioritized source when assigning public IPv4 addresses.
+  If there are no more assignable IP addresses in the IPAM pool, AWS managed IPv4 addresses are assigned.
+
+  !!!tip
+  To remove an IPAM pool associated to your ALB, remove the annotation from your ingress.
+
+  !!!example
+  ```
+  alb.ingress.kubernetes.io/ipam-ipv4-pool-id: ipam-pool-0f995c17c00375b48
+  ```
+
 - <a name="actions">`alb.ingress.kubernetes.io/actions.${action-name}`</a> Provides a method for configuring custom actions on a listener, such as Redirect Actions.
 
     The `action-name` in the annotation must match the serviceName in the Ingress rules, and servicePort must be `use-annotation`.
 
-    !!!note "use ARN in forward Action"
-        ARN can be used in forward action(both simplified schema and advanced schema), it must be an targetGroup created outside of k8s, typically an targetGroup for legacy application.
+    !!!note "use TargetGroupARN/TargetGroupName in forward Action"
+        TargetGroupARN/TargetGroupName can be used in forward action (both simplified schema and advanced schema), it must be a target group created outside of k8s, typically a targetGroup for a legacy application.
     !!!note "use ServiceName/ServicePort in forward Action"
-        ServiceName/ServicePort can be used in forward action(advanced schema only).
+        ServiceName/ServicePort can be used in forward action (advanced schema only).
 
     !!!warning ""
-        [Auth related annotations](#authentication) on Service object will only be respected if a single TargetGroup in is used.
+        [Auth related annotations](#authentication) on a Service object will only be respected if a single TargetGroup is used.
 
     !!!example
         - response-503: return fixed 503 response
         - redirect-to-eks: redirect to an external url
         - forward-single-tg: forward to a single targetGroup [**simplified schema**]
+        - forward-single-tg-by-name: forward to a single targetGroup identified by its name  [**simplified schema**]
         - forward-multiple-tg: forward to multiple targetGroups with different weights and stickiness config [**advanced schema**]
 
         ```yaml
@@ -260,8 +320,10 @@ Traffic Routing can be controlled with following annotations:
               {"type":"redirect","redirectConfig":{"host":"aws.amazon.com","path":"/eks/","port":"443","protocol":"HTTPS","query":"k=v","statusCode":"HTTP_302"}}
             alb.ingress.kubernetes.io/actions.forward-single-tg: >
               {"type":"forward","targetGroupARN": "arn-of-your-target-group"}
+            alb.ingress.kubernetes.io/actions.forward-single-tg-by-name: >
+              {"type":"forward","targetGroupName": "name-of-your-target-group"}
             alb.ingress.kubernetes.io/actions.forward-multiple-tg: >
-              {"type":"forward","forwardConfig":{"targetGroups":[{"serviceName":"service-1","servicePort":"http","weight":20},{"serviceName":"service-2","servicePort":80,"weight":20},{"targetGroupARN":"arn-of-your-non-k8s-target-group","weight":60}],"targetGroupStickinessConfig":{"enabled":true,"durationSeconds":200}}}
+              {"type":"forward","forwardConfig":{"targetGroups":[{"serviceName":"service-1","servicePort":"http","weight":20},{"serviceName":"service-2","servicePort":80,"weight":20},{"targetGroupARN":"arn-of-your-non-k8s-target-group","weight":60},{"targetGroupName":"name-of-your-non-k8s-target-group","weight":80}],"targetGroupStickinessConfig":{"enabled":true,"durationSeconds":200}}}
         spec:
           ingressClassName: alb
           rules:
@@ -292,15 +354,78 @@ Traffic Routing can be controlled with following annotations:
                     pathType: Exact
                     backend:
                       service:
+                        name: forward-single-tg-by-name
+                        port:
+                          name: use-annotation
+                  - path: /path3
+                    pathType: Exact
+                    backend:
+                      service:
                         name: forward-multiple-tg
                         port:
                           name: use-annotation
+        ```
+
+- <a name="transforms">`alb.ingress.kubernetes.io/transforms.${transforms-name}`</a> Provides a method for specifying transforms on Ingress spec.
+
+    The `transforms-name` in the annotation must match the serviceName in the Ingress rules.
+
+    !!!example "URL rewrite"
+
+        Example transform to remove the leading `/api/` from request paths:
+
+        ```yaml
+        alb.ingress.kubernetes.io/transforms.my-service: >
+            [
+                {
+                    "type": "url-rewrite",
+                    "urlRewriteConfig": {
+                        "rewrites": [
+                            {
+                                "regex": "^\\/api\\/(.+)$",
+                                "replace": "/$1"
+                            }
+                        ]
+                    }
+                }
+            ]
+        ```
+
+    !!!example "Host header rewrite"
+
+        Example transform to replace `example.com` with `example.org` from request host headers:
+
+        ```yaml
+        alb.ingress.kubernetes.io/transforms.my-service: >
+            [
+                {
+                    "type": "host-header-rewrite",
+                    "hostHeaderRewriteConfig": {
+                        "rewrites": [
+                            {
+                                "regex": "^(.+)\\.example\\.com$",
+                                "replace": "$1.example.org"
+                            }
+                        ]
+                    }
+                }
+            ]
         ```
 
 - <a name="conditions">`alb.ingress.kubernetes.io/conditions.${conditions-name}`</a> Provides a method for specifying routing conditions **in addition to original host/path condition on Ingress spec**.
 
     The `conditions-name` in the annotation must match the serviceName in the Ingress rules.
     It can be a either real serviceName or an annotation based action name when servicePort is `use-annotation`.
+
+    Condition values can be specified using *either* `values` or `regexValues`:
+
+     - `values`: Wildcard syntax, where `*` matches 0 or more characters, and `?` matches exactly 1 character.
+
+        `values` is supported for all condition types: `host-header`, `http-header`, `http-request-method`, `path-pattern`, and `source-ip`.
+
+     - `regexValues`: Regex syntax.
+
+        `regexValues` is supported for the following condition types: `host-header`, `http-header`, and `path-pattern`.
 
     !!!warning "limitations"
         General ALB limitations applies:
@@ -313,7 +438,7 @@ Traffic Routing can be controlled with following annotations:
 
         Refer [ALB documentation](https://docs.aws.amazon.com/elasticloadbalancing/latest/application/load-balancer-listeners.html#rule-condition-types) for more details.
 
-    !!!example
+    !!!example "Examples using `values`"
         - rule-path1:
             - Host is www.example.com OR anno.example.com
             - Path is /path1
@@ -436,10 +561,10 @@ Traffic Routing can be controlled with following annotations:
                           name: use-annotation
         ```
 
-    !!!note 
+    !!!note
         If you are using `alb.ingress.kubernetes.io/target-group-attributes` with `stickiness.enabled=true`, you should add `TargetGroupStickinessConfig` under `alb.ingress.kubernetes.io/actions.weighted-routing`
-        
-    !!!example
+
+    !!!example "Example using target group stickiness config"
 
         ```yaml
             apiVersion: networking.k8s.io/v1
@@ -487,6 +612,79 @@ Traffic Routing can be controlled with following annotations:
                             port:
                             name: use-annotation
         ```
+    
+    !!!example "Examples using `regexValues`"
+
+        HTTP header condition using regex values:
+
+        ```yaml
+        alb.ingress.kubernetes.io/conditions.my-service: >
+            [{ "field": "http-header", "httpHeaderConfig": { "httpHeaderName": "User-Agent", "regexValues": [ ".+Chrome.+" ] } }]
+        ```
+
+        Path condition using regex values:
+
+        ```yaml
+        alb.ingress.kubernetes.io/conditions.my-service: >
+            [{ "field": "path-pattern", "pathPatternConfig": { "regexValues": [ "^/api/?(.*)$" ] } }]
+        ```
+
+        Host header condition using regex values:
+
+        ```yaml
+        alb.ingress.kubernetes.io/conditions.my-service: >
+            [{ "field": "host-header", "hostHeaderConfig": { "regexValues": [ "^(.+)\\.example\\.com" ] } }]
+        ```
+    
+    !!!warning "Considerations when using `regexValues`"
+
+        ALB does not support mixing `values` (wildcard syntax) and `regexValues` (regex syntax) for the same condition type.
+
+        In particular, when using the AWS Load Balancer Controller:
+
+         - By default, additional `path-pattern` conditions **must** use `values`.
+        
+            This is because the AWS Load Balancer Controller automatically adds `path-pattern` conditions using `values` according to your [Ingress specification](../spec/).
+            
+            To configure additional `path-pattern` conditions using `regexValues`, configure the [`alb.ingress.kubernetes.io/use-regex-path-match`](#use-regex-path-match) annotation. When this annotation is set to `"true"`, the AWS Load Balancer Controller can add `path-pattern` conditions with `regexValues`.
+        
+         - If your [Ingress specification](../spec/) includes a `host` rule, additional `host-header` conditions **must** use `values`.
+
+            To configure `host-header` conditions using `regexValues`, use the `alb.ingress.kubernetes.io/conditions.${conditions-name}` annotation instead of Ingress specification rules.
+
+        In other words:
+
+         - When [`alb.ingress.kubernetes.io/use-regex-path-match`](#use-regex-path-match) is `"false"` (default value), for HTTP paths using `pathType: ImplementationSpecific`, additional `path-pattern` conditions can **only** use `values`.
+         - When [`alb.ingress.kubernetes.io/use-regex-path-match`](#use-regex-path-match) is `"true"`, for HTTP paths using `pathType: ImplementationSpecific`, additional `path-pattern` conditions can **only** use `regexValues`.
+         - If a ingress rule `host` is specified, additional `host-header` conditions can only use `values`.
+
+
+- <a name="use-regex-path-match">`alb.ingress.kubernetes.io/use-regex-path-match`</a> Configure whether HTTP paths in your [Ingress specification](../spec/) should be evaluated using regex.
+
+    * This configuration only applies to HTTP paths using `pathType: ImplementationSpecific`. HTTP paths using `pathType: Exact` or `pathType: Prefix` are not affected by this annotation.
+    * A leading `/` must precede the regex. The leading `/` will be removed from the regex.
+
+    !!!example "Ingress rule path evaluated as regex"
+
+        Annotation:
+
+        ```yaml
+        alb.ingress.kubernetes.io/use-regex-path-match: "true"
+        ```
+
+        Ingress rule path:
+
+        ```yaml
+        -   path: "/^/api/(.+)$"
+            pathType: ImplementationSpecific
+            backend:
+                service:
+                name: service-2048
+                port:
+                    number: 80
+        ```
+
+        With this configuration, the rule condition regex value will be `^/api/(.+)$` as the leading `/` is removed from the regex.
 
 ## Access control
 Access control for LoadBalancer can be controlled with following annotations:
@@ -504,7 +702,7 @@ Access control for LoadBalancer can be controlled with following annotations:
         `inbound-cidrs` is merged across all Ingresses in IngressGroup, but is exclusive per listen-port.
 
         - the `inbound-cidrs` will only impact the ports defined for that Ingress.
-        - if same listen-port is defined by multiple Ingress within IngressGroup, inbound-cidrs should only be defined on one of the Ingress.
+        - if same listen-port is defined by multiple Ingress within IngressGroup, `inbound-cidrs` should only be defined on one of the Ingress.
 
     !!!note "Default"
 
@@ -519,10 +717,32 @@ Access control for LoadBalancer can be controlled with following annotations:
         alb.ingress.kubernetes.io/inbound-cidrs: 10.0.0.0/24
         ```
 
+- <a name="security-group-prefix-lists">`alb.ingress.kubernetes.io/security-group-prefix-lists`</a> specifies the managed prefix lists that are allowed to access LoadBalancer.
+
+    !!!note "Merge Behavior"
+        `security-group-prefix-lists` is merged across all Ingresses in IngressGroup, but is exclusive per listen-port.
+
+        - the `security-group-prefix-lists` will only impact the ports defined for that Ingress.
+        - if same listen-port is defined by multiple Ingress within IngressGroup, `security-group-prefix-lists` should only be defined on one of the Ingress.
+
+    !!!warning ""
+        This annotation will be ignored if `alb.ingress.kubernetes.io/security-groups` is specified.
+
+    !!!warning ""
+        If you'd like to use this annotation, make sure your security group rule quota is enough. If you'd like to know how the managed prefix list affects your quota, see the [reference](https://docs.aws.amazon.com/vpc/latest/userguide/working-with-aws-managed-prefix-lists.html#aws-managed-prefix-list-weights) in the AWS documentation for more details.
+
+    !!!tip ""
+        If you only use this annotation without `inbound-cidrs`, the controller managed security group would ignore the `inbound-cidrs` default settings.
+
+    !!!example
+        ```
+        alb.ingress.kubernetes.io/security-group-prefix-lists: pl-000000, pl-111111
+        ```
+
 - <a name="security-groups">`alb.ingress.kubernetes.io/security-groups`</a> specifies the securityGroups you want to attach to LoadBalancer.
 
     !!!note ""
-        When this annotation is not present, the controller will automatically create one security group, the security group will be attached to the LoadBalancer and allow access from [`inbound-cidrs`](#inbound-cidrs) to the [`listen-ports`](#listen-ports).
+        When this annotation is not present, the controller will automatically create one security group, the security group will be attached to the LoadBalancer and allow access from [`inbound-cidrs`](#inbound-cidrs) and [`security-group-prefix-lists`](#security-group-prefix-lists) to the [`listen-ports`](#listen-ports).
         Also, the securityGroups for Node/Pod will be modified to allow inbound traffic from this securityGroup.
 
     !!!note ""
@@ -561,7 +781,7 @@ ALB supports authentication with Cognito or OIDC. See [Authenticate Users Using 
 
 - <a name="auth-idp-cognito">`alb.ingress.kubernetes.io/auth-idp-cognito`</a> specifies the cognito idp configuration.
 
-    !!!tip ""
+    !!!warning "For Amazon Cognito Domain only"
         If you are using Amazon Cognito Domain, the `userPoolDomain` should be set to the domain prefix(my-domain) instead of full domain(https://my-domain.auth.us-west-2.amazoncognito.com)
 
     !!!example
@@ -572,7 +792,7 @@ ALB supports authentication with Cognito or OIDC. See [Authenticate Users Using 
 - <a name="auth-idp-oidc">`alb.ingress.kubernetes.io/auth-idp-oidc`</a> specifies the oidc idp configuration.
 
     !!!tip ""
-        You need to create an [secret](https://kubernetes.io/docs/concepts/configuration/secret/) within the same namespace as Ingress to hold your OIDC clientID and clientSecret. The format of secret is as below:
+        You need to create a [secret](https://kubernetes.io/docs/concepts/configuration/secret/) within the same namespace as Ingress to hold your OIDC clientID and clientSecret. The format of secret is as below:
         ```yaml
         apiVersion: v1
         kind: Secret
@@ -592,7 +812,7 @@ ALB supports authentication with Cognito or OIDC. See [Authenticate Users Using 
 - <a name="auth-on-unauthenticated-request">`alb.ingress.kubernetes.io/auth-on-unauthenticated-request`</a> specifies the behavior if the user is not authenticated.
 
 	!!!info "options:"
-        * **authenticate**: try authenticate with configured IDP.
+        * **authenticate**: try to authenticate with configured IDP.
         * **deny**: return an HTTP 401 Unauthorized error.
         * **allow**: allow the request to be forwarded to the target.
 
@@ -627,6 +847,19 @@ ALB supports authentication with Cognito or OIDC. See [Authenticate Users Using 
     !!!example
         ```
         alb.ingress.kubernetes.io/auth-session-timeout: '86400'
+        ```
+
+## Token Validation
+ALB supports validating JSON Web Tokens (JWTs) for secure service-to-service communication. The `exp` and `iss` claims are always validated by default. If present, the `nbf` and `iat` claims will also be automatically validated. JWT validation can be controlled with the following annotation:
+
+!!!warning "HTTPS only"
+    JWT validation is only supported for HTTPS listeners. See [TLS](#tls) for configuring HTTPS listeners.
+
+- <a name="jwt-validation">`alb.ingress.kubernetes.io/jwt-validation`</a> specifies the configuration for JWT validation. This includes the JSON Web Key Set (JWKS) endpoint and issuer, along with any additional claims to validate. For each additional claim added, the name of the claim, the format of the values in the JWT, and the values of the claim should all be specified.
+
+    !!!example
+        ```
+        alb.ingress.kubernetes.io/jwt-validation: '{"jwksEndpoint":"https://example-endpoint.com","issuer":"https://example-issuer.com","additionalClaims":[{"name":"admin","format":"single-string","values":["true"]},{"name":"ver","format":"string-array","values":["6","19"]},{"name":"scope","format":"space-separated-values","values":["read:api","write","email"]}]}'
         ```
 
 ## Health Check
@@ -731,7 +964,9 @@ TLS support can be controlled with the following annotations:
 - <a name="certificate-arn">`alb.ingress.kubernetes.io/certificate-arn`</a> specifies the ARN of one or more certificate managed by [AWS Certificate Manager](https://aws.amazon.com/certificate-manager)
 
     !!!tip ""
-        The first certificate in the list will be added as default certificate. And remaining certificate will be added to the optional certificate list.
+        The first certificate in the list will be added as the default certificate.
+        The remaining certificates will be added to the optional SNI certificate list.
+        If the same certificate as the default certificate is also listed again (either explicitly in the list or via annotations from other IngressGroup members), it will still be added to the SNI list as well.
         See [SSL Certificates](https://docs.aws.amazon.com/elasticloadbalancing/latest/application/create-https-listener.html#https-listener-certificates) for more details.
 
     !!!tip "Certificate Discovery"
@@ -747,12 +982,46 @@ TLS support can be controlled with the following annotations:
             alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:us-west-2:xxxxx:certificate/cert1,arn:aws:acm:us-west-2:xxxxx:certificate/cert2,arn:aws:acm:us-west-2:xxxxx:certificate/cert3
             ```
 
-- <a name="ssl-policy">`alb.ingress.kubernetes.io/ssl-policy`</a> specifies the [Security Policy](https://docs.aws.amazon.com/elasticloadbalancing/latest/application/create-https-listener.html#describe-ssl-policies) that should be assigned to the ALB, allowing you to control the protocol and ciphers.
+- <a name="ssl-policy">`alb.ingress.kubernetes.io/ssl-policy`</a> specifies the [Security Policy](https://docs.aws.amazon.com/elasticloadbalancing/latest/application/describe-ssl-policies.html) that should be assigned to the ALB, allowing you to control the protocol and ciphers.
 
     !!!example
         ```
         alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-TLS-1-1-2017-01
         ```
+
+- <a name="mutual-authentication">`alb.ingress.kubernetes.io/mutual-authentication`</a>  specifies the mutual authentication configuration that should be assigned to the Application Load Balancer secure listener ports. See [Mutual authentication with TLS](https://docs.aws.amazon.com/elasticloadbalancing/latest/application/mutual-authentication.html) in the AWS documentation for more details.
+
+    !!!note
+        - This annotation is not applicable for Outposts, Local Zones or Wavelength zones.
+        - "Configuration Options"
+            - `port: listen port `
+               - Must be an HTTPS port specified by [listen-ports](#listen-ports).
+            - `mode: "off" (default) | "passthrough" | "verify"`
+               - `verify` mode requires an existing trust store resource.
+               - See [Create a trust store](https://docs.aws.amazon.com/elasticloadbalancing/latest/application/mutual-authentication.html#create-trust-store) in the AWS documentation for more details.
+            - `trustStore: ARN (arn:aws:elasticloadbalancing:trustStoreArn) | Name (my-trust-store)`
+               - Both ARN and Name of trustStore are supported values.
+               - `trustStore` is required when mode is `verify`.
+            - `ignoreClientCertificateExpiry : true | false (default)`
+            - `advertiseTrustStoreCaNames : "on" | "off" (default)`
+        - Once the Mutual Authentication is set, to turn it off, you will have to explicitly pass in this annotation with `mode : "off"`.
+
+    !!!example
+        - [listen-ports](#listen-ports) specifies four HTTPS ports: `80, 443, 8080, 8443`
+        - listener `HTTPS:80` will be set to `passthrough` mode
+        - listener `HTTPS:443` will be set to `verify` mode, associated with trust store arn `arn:aws:elasticloadbalancing:trustStoreArn` and have `ignoreClientCertificateExpiry` set to `true`
+        - listeners `HTTPS:8080` and `HTTPS:8443` remain in the default mode `off`.
+            ```
+            alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS": 80}, {"HTTPS": 443}, {"HTTPS": 8080}, {"HTTPS": 8443}]'
+            alb.ingress.kubernetes.io/mutual-authentication: '[{"port": 80, "mode": "passthrough"},
+                                                               {"port": 443, "mode": "verify", "trustStore": "arn:aws:elasticloadbalancing:trustStoreArn", "ignoreClientCertificateExpiry" : true}]'
+            ```
+
+    !!!note "Note"
+        To avoid conflict errors in IngressGroup, this annotation should only be specified on a single Ingress within IngressGroup or specified with same value across all Ingresses within IngressGroup.
+
+    !!!warning "Trust stores limit per Application Load Balancer"
+        A maximum of two different trust stores can be associated among listeners on the same ingress. See [Quotas for your Application Load Balancers](https://docs.aws.amazon.com/elasticloadbalancing/latest/application/load-balancer-limits.html) in the AWS documentation for more details.
 
 ## Custom attributes
 Custom attributes to LoadBalancers and TargetGroups can be controlled with following annotations:
@@ -787,7 +1056,14 @@ Custom attributes to LoadBalancers and TargetGroups can be controlled with follo
             ```
             alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=600
             ```
-
+        - set client_keep_alive to 3600 seconds
+            ```
+            alb.ingress.kubernetes.io/load-balancer-attributes: client_keep_alive.seconds=3600
+            ```
+        - enable [connection logs](https://docs.aws.amazon.com/elasticloadbalancing/latest/application/load-balancer-connection-logs.html)
+            ```
+            alb.ingress.kubernetes.io/load-balancer-attributes: connection_logs.s3.enabled=true,connection_logs.s3.bucket=my-connection-log-bucket,connection_logs.s3.prefix=my-app
+            ```
 - <a name="target-group-attributes">`alb.ingress.kubernetes.io/target-group-attributes`</a> specifies [Target Group Attributes](https://docs.aws.amazon.com/elasticloadbalancing/latest/application/load-balancer-target-groups.html#target-group-attributes) which should be applied to Target Groups.
 
     !!!example
@@ -808,6 +1084,43 @@ Custom attributes to LoadBalancers and TargetGroups can be controlled with follo
                     ```
                     alb.ingress.kubernetes.io/target-group-attributes: load_balancing.algorithm.type=least_outstanding_requests
                     ```
+        - enable Automated Target Weights(ATW) on HTTP/HTTPS target groups to increase application availability. Set your load balancing algorithm to weighted random and turn on anomaly mitigation (recommended)
+            ```
+            alb.ingress.kubernetes.io/target-group-attributes: load_balancing.algorithm.type=weighted_random,load_balancing.algorithm.anomaly_mitigation=on
+            ```
+
+
+- <a name="multi-cluster-target-group">`alb.ingress.kubernetes.io/multi-cluster-target-group`</a> Allows you to share the created Target Group ARN with other Load Balancer Controller managed clusters.
+
+    !!!warning ""
+    This feature does not offer any Deletion Protection. Deleting the resource will still delete the Target Group. If you need to support
+    Target Groups shared with multiple clusters, it's recommended to use an out-of-band Target Group that is not managed by a Load Balancer Controller.
+
+    !!!note ""
+    - It is not recommended to change this value frequently, if ever. The recommended way to set this value is on creation of the service or ingress.
+
+    !!!example
+    ```
+    alb.ingress.kubernetes.io/multi-cluster-target-group: "true"
+    ```
+
+- <a name="listener-attributes">`alb.ingress.kubernetes.io/listener-attributes.${Protocol}-${Port}`</a> specifies Listener Attributes which should be applied to listener.
+
+    !!!example
+        - Server header enablement attribute
+            ```
+            alb.ingress.kubernetes.io/listener-attributes.HTTP-80: routing.http.response.server.enabled=true
+            ```
+        - Add Access-Control-Allow-Headers header value (with comma)
+            ```
+            alb.ingress.kubernetes.io/listener-attributes.HTTPS-443: "routing.http.response.access_control_allow_headers.header_value=exampleValue\\,anotherExampleValue"
+            ```
+            or
+            ```
+            alb.ingress.kubernetes.io/listener-attributes.HTTPS-443: routing.http.response.access_control_allow_headers.header_value=exampleValue\,anotherExampleValue
+            ```      
+            both result Access-Control-Allow-Headers header value: exampleValue,anotherExampleValue
+
 
 ## Resource Tags
 The AWS Load Balancer Controller automatically applies following tags to the AWS resources (ALB/TargetGroups/SecurityGroups/Listener/ListenerRule) it creates:
@@ -827,31 +1140,244 @@ In addition, you can use annotations to specify additional tags
         alb.ingress.kubernetes.io/tags: Environment=dev,Team=test
         ```
 
-## Addons
-- <a name="waf-acl-id">`alb.ingress.kubernetes.io/waf-acl-id`</a> specifies the identifier for the Amazon WAF web ACL.
+## Capacity Unit Reservation
+Load balancer capacity unit reservation can be configured via following annotations:
 
-    !!!warning ""
-        Only Regional WAF is supported.
+- <a name="load-balancer-capacity-reservation">`alb.ingress.kubernetes.io/minimum-load-balancer-capacity`</a> specifies the
+  [Capacity Unit Reservation](https://docs.aws.amazon.com/elasticloadbalancing/latest/application/capacity-unit-reservation.html) to be configured.
 
     !!!example
-        ```alb.ingress.kubernetes.io/waf-acl-id: 499e8b99-6671-4614-a86d-adb1810b7fbe
-        ```
+        - set the capacity unit reservation to 1000
+          ```
+          alb.ingress.kubernetes.io/minimum-load-balancer-capacity: CapacityUnits=1000
+          ```
+        - reset the capacity unit reservation
+          ```
+          alb.ingress.kubernetes.io/minimum-load-balancer-capacity: CapacityUnits=0
+          ```
+
+    !!!note "Notes"
+        - If you specify this annotation, but remove it later, the capacity unit reservation is not reset. You need to reset the capacity by setting the capacity units to zero as show in the example above.
+        - If users do not want the controller to manage the capacity unit reservation on load balancer, they can disable the feature by setting controller command line feature gate flag ```--feature-gates=LBCapacityReservation=true```
+
+## Addons
+
+- <a name="waf-acl-id">`alb.ingress.kubernetes.io/waf-acl-id`</a> specifies the identifier for the Amazon WAF Classic web ACL.
+
+    !!!warning ""
+        Only Regional WAF Classic is supported.
+
+    !!!note ""
+        When this annotation is absent or empty, the controller will keep LoadBalancer WAF Classic settings unchanged.
+        To disable WAF Classic, explicitly set the annotation value to 'none'.
+
+    !!!example
+        - enable WAF Classic
+            ```alb.ingress.kubernetes.io/waf-acl-id: 499e8b99-6671-4614-a86d-adb1810b7fbe
+            ```
+        - disable WAF Classic
+            ```alb.ingress.kubernetes.io/waf-acl-id: none
+            ```
 
 - <a name="wafv2-acl-arn">`alb.ingress.kubernetes.io/wafv2-acl-arn`</a> specifies ARN for the Amazon WAFv2 web ACL.
 
     !!!warning ""
         Only Regional WAFv2 is supported.
 
+    !!!note ""
+        When this annotation is absent or empty, the controller will keep LoadBalancer WAFv2 settings unchanged.
+        To disable WAFv2, explicitly set the annotation value to 'none'.
+
     !!!tip ""
         To get the WAFv2 Web ACL ARN from the Console, click the gear icon in the upper right and enable the ARN column.
 
     !!!example
-        ```alb.ingress.kubernetes.io/wafv2-acl-arn: arn:aws:wafv2:us-west-2:xxxxx:regional/webacl/xxxxxxx/3ab78708-85b0-49d3-b4e1-7a9615a6613b
-        ```
+        - enable WAFv2
+            ```alb.ingress.kubernetes.io/wafv2-acl-arn: arn:aws:wafv2:us-west-2:xxxxx:regional/webacl/xxxxxxx/3ab78708-85b0-49d3-b4e1-7a9615a6613b
+            ```
+        - disable WAFV2
+            ```alb.ingress.kubernetes.io/wafv2-acl-arn: none
+            ```
+
+- <a name="wafv2-acl-name">`alb.ingress.kubernetes.io/wafv2-acl-name`</a> specifies Name of the Amazon WAFv2 web ACL.
+
+    !!!note ""
+        The controller role must allow access to `wafv2:ListWebACLs` 
+
+    !!!warning ""
+        Only Regional WAFv2 is supported.
+
+    !!!note ""
+        When this annotation is absent or empty, the controller will keep LoadBalancer WAFv2 settings unchanged.
+        To disable WAFv2, explicitly set the annotation value to 'none'.
+
+    !!!example
+        - enable WAFv2
+            ```alb.ingress.kubernetes.io/wafv2-acl-name: web-acl-name-1
+            ```
+        - disable WAFV2
+            ```alb.ingress.kubernetes.io/wafv2-acl-name: none
+            ```
 
 - <a name="shield-advanced-protection">`alb.ingress.kubernetes.io/shield-advanced-protection`</a> turns on / off the AWS Shield Advanced protection for the load balancer.
 
+    !!!note ""
+        When this annotation is absent, the controller will keep LoadBalancer shield protection settings unchanged.
+        To disable shield protection, explicitly set the annotation value to 'false'.
+
     !!!example
-        ```alb.ingress.kubernetes.io/shield-advanced-protection: 'true'
+        - enable shield protection
+            ```alb.ingress.kubernetes.io/shield-advanced-protection: 'true'
+            ```
+        - disable shield protection
+            ```alb.ingress.kubernetes.io/shield-advanced-protection: 'false'
+            ```
+
+
+## Enable frontend NLB
+When this option is set to true, the controller will automatically provision a Network Load Balancer and register the Application Load Balancer as its target. Additional annotations are available to customize the NLB configurations, including options for scheme, security groups, subnets, and health check. The ingress resource will have two status entries, one for the NLB DNS and one for the ALB DNS. This allows users to combine the benefits of NLB and ALB into a single solution, leveraging NLB features like static IP address and PrivateLink, while retaining the rich routing capabilities of ALB.
+
+!!!warning
+    - If you need to change the ALB [scheme](#scheme), make sure to disable this feature first. Changing the scheme will create a new ALB, which could interfere with the current configuration.
+    - If you create ingress and enable the feature at once, provisioning the NLB and registering the ALB as target can take up to 3-4 mins to complete.
+
+- <a name="enable-frontend-nlb">`alb.ingress.kubernetes.io/enable-frontend-nlb`</a> enables frontend Network Load Balancer functionality.
+
+    !!!example
+        - Enable frontend nlb
+            ```
+            alb.ingress.kubernetes.io/enable-frontend-nlb: "true"
+            ```
+
+- <a name="frontend-nlb-scheme">`alb.ingress.kubernetes.io/frontend-nlb-scheme`</a> specifies the scheme for the Network Load Balancer.
+
+    !!!example
+        - Set NLB scheme to internet-facing
+            ```
+            alb.ingress.kubernetes.io/frontend-nlb-scheme: internet-facing
+            ```
+
+- <a name="frontend-nlb-subnets">`alb.ingress.kubernetes.io/frontend-nlb-subnets`</a> specifies the subnets for the Network Load Balancer.
+
+    !!!example
+        - Specify subnets for NLB
+            ```
+            alb.ingress.kubernetes.io/frontend-nlb-subnets: subnet-xxxx1,subnet-xxxx2
+            ```
+
+- <a name="frontend-nlb-security-groups">`alb.ingress.kubernetes.io/frontend-nlb-security-groups`</a> specifies the security groups for the Network Load Balancer.
+
+    !!!example
+        - Specify security groups for NLB
+            ```
+            alb.ingress.kubernetes.io/frontend-nlb-security-groups: sg-xxxx1,sg-xxxx2
+            ```
+
+- <a name="frontend-nlb-listener-port-mapping">`alb.ingress.kubernetes.io/frontend-nlb-listener-port-mapping`</a> specifies the port mapping configuration for the Network Load Balancer listeners.
+
+    !!!note "Default"
+        - The port defaults to match the ALB listener port, based on whether `alb.ingress.kubernetes.io/listen-ports`(#listen-ports) is specified.
+
+    !!!example
+        - Forward TCP traffic from NLB:80 to ALB:443
+            ```
+            alb.ingress.kubernetes.io/frontend-nlb-listener-port-mapping: 80=443
+            ```
+
+- <a name="frontend-nlb-healthcheck-port">`alb.ingress.kubernetes.io/frontend-nlb-healthcheck-port`</a> specifies the port used for health checks.
+
+    !!!example
+        - Set health check port
+            ```
+            alb.ingress.kubernetes.io/frontend-nlb-healthcheck-port: traffic-port
+            ```
+
+- <a name="frontend-nlb-healthcheck-protocol">`alb.ingress.kubernetes.io/frontend-nlb-healthcheck-protocol`</a> specifies the protocol used for health checks.
+
+    !!!example
+        - Set health check protocol
+            ```
+            alb.ingress.kubernetes.io/frontend-nlb-healthcheck-protocol: HTTP
+            ```
+
+- <a name="frontend-nlb-healthcheck-path">`alb.ingress.kubernetes.io/frontend-nlb-healthcheck-path`</a> specifies the destination path for health checks.
+
+    !!!example
+        - Set health check path
+            ```
+            alb.ingress.kubernetes.io/frontend-nlb-healthcheck-path: /health
+            ```
+
+- <a name="frontend-nlb-healthcheck-interval-seconds">`alb.ingress.kubernetes.io/frontend-nlb-healthcheck-interval-seconds`</a> specifies the interval between consecutive health checks.
+
+    !!!example
+        - Set health check interval
+            ```
+            alb.ingress.kubernetes.io/frontend-nlb-healthcheck-interval-seconds: '15'
+            ```
+
+- <a name="frontend-nlb-healthcheck-timeout-seconds">`alb.ingress.kubernetes.io/frontend-nlb-healthcheck-timeout-seconds`</a> specifies the target group health check timeout.
+
+    !!!example
+        - Set health check timeout
+            ```
+            alb.ingress.kubernetes.io/frontend-nlb-healthcheck-timeout-seconds: '5'
+            ```
+
+- <a name="frontend-nlb-healthcheck-healthy-threshold-count">`alb.ingress.kubernetes.io/frontend-nlb-healthcheck-healthy-threshold-count`</a> specifies the consecutive health check successes required before a target is considered healthy.
+
+    !!!example
+        - Set healthy threshold count
+            ```
+            alb.ingress.kubernetes.io/frontend-nlb-healthcheck-healthy-threshold-count: '3'
+            ```
+
+- <a name="frontend-nlb-healthcheck-unhealthy-threshold-count">`alb.ingress.kubernetes.io/frontend-nlb-healthcheck-unhealthy-threshold-count`</a> specifies the consecutive health check failures before a target gets marked unhealthy.
+
+    !!!example
+        - Set unhealthy threshold count
+            ```
+            alb.ingress.kubernetes.io/frontend-nlb-healthcheck-unhealthy-threshold-count: '3'
+            ```
+
+- <a name="frontend-nlb-healthcheck-success-codes">`alb.ingress.kubernetes.io/frontend-nlb-healthcheck-success-codes`</a> specifies the HTTP codes that indicate a successful health check.
+
+    !!!example
+        - Set success codes for health check
+            ```
+            alb.ingress.kubernetes.io/frontend-nlb-healthcheck-success-codes: '200'
+            ```
+
+- <a name="frontend-nlb-tags">`alb.ingress.kubernetes.io/frontend-nlb-tags`</a> specifies additional tags to be applied to the frontend NLB. If not specified, the tags from ALB (specified via `alb.ingress.kubernetes.io/tags`) will be propagated to the NLB.
+
+    !!!note "Merge Behavior"
+        `frontend-nlb-tags` is exclusive across all Ingresses in IngressGroup.
+        If specified on multiple Ingresses within IngressGroup, the values must match.
+
+    !!!example
+        ```
+        alb.ingress.kubernetes.io/frontend-nlb-tags: Environment=prod,Team=platform
         ```
 
+- <a name="frontend-nlb-eip-allocations">`alb.ingress.kubernetes.io/frontend-nlb-eip-allocations`</a> specifies a list of [elastic IP address](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/elastic-ip-addresses-eip.html) configuration for an internet-facing NLB.
+
+    !!!note
+        - This configuration is optional, and you can use it to assign static IP addresses to your NLB
+        - If you include the subnets [annotation](#frontend-nlb-subnets) it must have the same number of subnets as this annotation has EIPs.
+        - NLB must be internet-facing
+
+    !!!example
+        ```
+        alb.ingress.kubernetes.io/frontend-nlb-eip-allocations: eipalloc-xyz, eipalloc-zzz
+        ```
+- <a name="target-control-port">`alb.ingress.kubernetes.io/target-control-port.${serviceName}.${servicePort}`</a> specifies the port on which the target control agent and application load balancer exchange management traffic for the target optimizer feature.  
+
+    !!!note
+        - The value should match the port specified in the ALB target control agent's `TARGET_CONTROL_CONTROL_ADDRESS` environment variable.
+        - Target control port once specified cannot be modified. To improve this experience, Controller will create a new target group with modified target control port and reassociate it with the listener.
+
+    !!!example
+        - Set target control port
+            ```
+            alb.ingress.kubernetes.io/target-control-port.alb-target-control.80: "3000"
+            ```

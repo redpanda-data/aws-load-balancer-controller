@@ -11,14 +11,26 @@ import (
 type Feature string
 
 const (
-	ListenerRulesTagging         Feature = "ListenerRulesTagging"
-	WeightedTargetGroups         Feature = "WeightedTargetGroups"
-	ServiceTypeLoadBalancerOnly  Feature = "ServiceTypeLoadBalancerOnly"
-	EndpointsFailOpen            Feature = "EndpointsFailOpen"
-	EnableServiceController      Feature = "EnableServiceController"
-	EnableIPTargetType           Feature = "EnableIPTargetType"
-	SubnetsClusterTagCheck       Feature = "SubnetsClusterTagCheck"
-	NLBHealthCheckAdvancedConfig Feature = "NLBHealthCheckAdvancedConfig"
+	ListenerRulesTagging          Feature = "ListenerRulesTagging"
+	WeightedTargetGroups          Feature = "WeightedTargetGroups"
+	ServiceTypeLoadBalancerOnly   Feature = "ServiceTypeLoadBalancerOnly"
+	EndpointsFailOpen             Feature = "EndpointsFailOpen"
+	EnableServiceController       Feature = "EnableServiceController"
+	EnableIPTargetType            Feature = "EnableIPTargetType"
+	EnableTCPUDPListenerType      Feature = "EnableTCPUDPListener"
+	EnableRGTAPI                  Feature = "EnableRGTAPI"
+	SubnetsClusterTagCheck        Feature = "SubnetsClusterTagCheck"
+	NLBHealthCheckAdvancedConfig  Feature = "NLBHealthCheckAdvancedConfig"
+	NLBSecurityGroup              Feature = "NLBSecurityGroup"
+	ALBSingleSubnet               Feature = "ALBSingleSubnet"
+	LBCapacityReservation         Feature = "LBCapacityReservation"
+	SubnetDiscoveryByReachability Feature = "SubnetDiscoveryByReachability"
+	NLBGatewayAPI                 Feature = "NLBGatewayAPI"
+	ALBGatewayAPI                 Feature = "ALBGatewayAPI"
+	GlobalAcceleratorController   Feature = "GlobalAcceleratorController"
+	EnhancedDefaultBehavior       Feature = "EnhancedDefaultBehavior"
+	EnableDefaultTagsLowPriority  Feature = "EnableDefaultTagsLowPriority"
+	ALBTargetControlAgent         Feature = "ALBTargetControlAgent"
 )
 
 type FeatureGates interface {
@@ -46,14 +58,26 @@ type defaultFeatureGates struct {
 func NewFeatureGates() FeatureGates {
 	return &defaultFeatureGates{
 		featureState: map[Feature]bool{
-			ListenerRulesTagging:         true,
-			WeightedTargetGroups:         true,
-			ServiceTypeLoadBalancerOnly:  false,
-			EndpointsFailOpen:            false,
-			EnableServiceController:      true,
-			EnableIPTargetType:           true,
-			SubnetsClusterTagCheck:       true,
-			NLBHealthCheckAdvancedConfig: true,
+			ListenerRulesTagging:          true,
+			WeightedTargetGroups:          true,
+			ServiceTypeLoadBalancerOnly:   false,
+			EndpointsFailOpen:             true,
+			EnableServiceController:       true,
+			EnableIPTargetType:            true,
+			EnableRGTAPI:                  false,
+			SubnetsClusterTagCheck:        true,
+			NLBHealthCheckAdvancedConfig:  true,
+			NLBSecurityGroup:              true,
+			ALBSingleSubnet:               false,
+			SubnetDiscoveryByReachability: true,
+			LBCapacityReservation:         true,
+			NLBGatewayAPI:                 false,
+			ALBGatewayAPI:                 false,
+			GlobalAcceleratorController:   false,
+			EnableTCPUDPListenerType:      false,
+			EnhancedDefaultBehavior:       false,
+			EnableDefaultTagsLowPriority:  false,
+			ALBTargetControlAgent:         false,
 		},
 	}
 }

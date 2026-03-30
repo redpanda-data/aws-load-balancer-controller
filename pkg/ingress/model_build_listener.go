@@ -7,19 +7,25 @@ import (
 	"net"
 	"strings"
 
-	awssdk "github.com/aws/aws-sdk-go/aws"
+	elbv2types "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2/types"
+	"sigs.k8s.io/aws-load-balancer-controller/pkg/shared_utils"
+
+	"k8s.io/utils/strings/slices"
+
+	awssdk "github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/pkg/errors"
 	networking "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/algorithm"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/annotations"
+	"sigs.k8s.io/aws-load-balancer-controller/pkg/config"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/k8s"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/model/core"
 	elbv2model "sigs.k8s.io/aws-load-balancer-controller/pkg/model/elbv2"
 )
 
-func (t *defaultModelBuildTask) buildListener(ctx context.Context, lbARN core.StringToken, port int64, config listenPortConfig, ingList []ClassifiedIngress) (*elbv2model.Listener, error) {
+func (t *defaultModelBuildTask) buildListener(ctx context.Context, lbARN core.StringToken, port int32, config listenPortConfig, ingList []ClassifiedIngress) (*elbv2model.Listener, error) {
 	lsSpec, err := t.buildListenerSpec(ctx, lbARN, port, config, ingList)
 	if err != nil {
 		return nil, err
@@ -29,7 +35,7 @@ func (t *defaultModelBuildTask) buildListener(ctx context.Context, lbARN core.St
 	return ls, nil
 }
 
-func (t *defaultModelBuildTask) buildListenerSpec(ctx context.Context, lbARN core.StringToken, port int64, config listenPortConfig, ingList []ClassifiedIngress) (elbv2model.ListenerSpec, error) {
+func (t *defaultModelBuildTask) buildListenerSpec(ctx context.Context, lbARN core.StringToken, port int32, config listenPortConfig, ingList []ClassifiedIngress) (elbv2model.ListenerSpec, error) {
 	defaultActions, err := t.buildListenerDefaultActions(ctx, config.protocol, ingList)
 	if err != nil {
 		return elbv2model.ListenerSpec{}, err
@@ -44,14 +50,20 @@ func (t *defaultModelBuildTask) buildListenerSpec(ctx context.Context, lbARN cor
 			CertificateARN: awssdk.String(certARN),
 		})
 	}
+	lsAttributes, attributesErr := t.buildListenerAttributes(ctx, ingList, port, config.protocol)
+	if attributesErr != nil {
+		return elbv2model.ListenerSpec{}, attributesErr
+	}
 	return elbv2model.ListenerSpec{
-		LoadBalancerARN: lbARN,
-		Port:            port,
-		Protocol:        config.protocol,
-		DefaultActions:  defaultActions,
-		Certificates:    certs,
-		SSLPolicy:       config.sslPolicy,
-		Tags:            tags,
+		LoadBalancerARN:      lbARN,
+		Port:                 port,
+		Protocol:             config.protocol,
+		DefaultActions:       defaultActions,
+		Certificates:         certs,
+		SSLPolicy:            config.sslPolicy,
+		MutualAuthentication: config.mutualAuthentication,
+		Tags:                 tags,
+		ListenerAttributes:   lsAttributes,
 	}, nil
 }
 
@@ -92,27 +104,45 @@ func (t *defaultModelBuildTask) buildListenerTags(_ context.Context, ingList []C
 	if err != nil {
 		return nil, err
 	}
+	if t.featureGates.Enabled(config.EnableDefaultTagsLowPriority) {
+		return algorithm.MergeStringMap(ingGroupTags, t.defaultTags), nil
+	}
 	return algorithm.MergeStringMap(t.defaultTags, ingGroupTags), nil
+}
+
+func (t *defaultModelBuildTask) buildListenerAttributes(ctx context.Context, ingList []ClassifiedIngress, port int32, listenerProtocol elbv2model.Protocol) ([]elbv2model.ListenerAttribute, error) {
+	ingGroupListenerAttributes, err := t.buildIngressGroupListenerAttributes(ctx, ingList, listenerProtocol, port)
+	if err != nil {
+		return nil, err
+	}
+	return ingGroupListenerAttributes, nil
 }
 
 // the listen port config for specific listener port.
 type listenPortConfig struct {
-	protocol       elbv2model.Protocol
-	inboundCIDRv4s []string
-	inboundCIDRv6s []string
-	sslPolicy      *string
-	tlsCerts       []string
+	protocol             elbv2model.Protocol
+	inboundCIDRv4s       []string
+	inboundCIDRv6s       []string
+	prefixLists          []string
+	sslPolicy            *string
+	tlsCerts             []string
+	mutualAuthentication *elbv2model.MutualAuthenticationAttributes
 }
 
-func (t *defaultModelBuildTask) computeIngressListenPortConfigByPort(ctx context.Context, ing *networking.Ingress) (map[int64]listenPortConfig, error) {
+func (t *defaultModelBuildTask) computeIngressListenPortConfigByPort(ctx context.Context, ing *ClassifiedIngress) (map[int32]listenPortConfig, error) {
 	explicitTLSCertARNs := t.computeIngressExplicitTLSCertARNs(ctx, ing)
 	explicitSSLPolicy := t.computeIngressExplicitSSLPolicy(ctx, ing)
+	prefixListIDs := t.computeIngressExplicitPrefixListIDs(ctx, ing)
 	inboundCIDRv4s, inboundCIDRV6s, err := t.computeIngressExplicitInboundCIDRs(ctx, ing)
 	if err != nil {
 		return nil, err
 	}
+	mutualAuthenticationAttributes, err := t.computeIngressMutualAuthentication(ctx, ing)
+	if err != nil {
+		return nil, err
+	}
 	preferTLS := len(explicitTLSCertARNs) != 0
-	listenPorts, err := t.computeIngressListenPorts(ctx, ing, preferTLS)
+	listenPorts, err := t.computeIngressListenPorts(ctx, ing.Ing, preferTLS)
 	if err != nil {
 		return nil, err
 	}
@@ -126,18 +156,19 @@ func (t *defaultModelBuildTask) computeIngressListenPortConfigByPort(ctx context
 	}
 	var inferredTLSCertARNs []string
 	if containsHTTPSPort && len(explicitTLSCertARNs) == 0 {
-		inferredTLSCertARNs, err = t.computeIngressInferredTLSCertARNs(ctx, ing)
+		inferredTLSCertARNs, err = t.computeIngressInferredTLSCertARNs(ctx, ing.Ing)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	listenPortConfigByPort := make(map[int64]listenPortConfig, len(listenPorts))
+	listenPortConfigByPort := make(map[int32]listenPortConfig, len(listenPorts))
 	for port, protocol := range listenPorts {
 		cfg := listenPortConfig{
 			protocol:       protocol,
 			inboundCIDRv4s: inboundCIDRv4s,
 			inboundCIDRv6s: inboundCIDRV6s,
+			prefixLists:    prefixListIDs,
 		}
 		if protocol == elbv2model.ProtocolHTTPS {
 			if len(explicitTLSCertARNs) == 0 {
@@ -146,6 +177,7 @@ func (t *defaultModelBuildTask) computeIngressListenPortConfigByPort(ctx context
 				cfg.tlsCerts = explicitTLSCertARNs
 			}
 			cfg.sslPolicy = explicitSSLPolicy
+			cfg.mutualAuthentication = mutualAuthenticationAttributes[port]
 		}
 		listenPortConfigByPort[port] = cfg
 	}
@@ -153,9 +185,12 @@ func (t *defaultModelBuildTask) computeIngressListenPortConfigByPort(ctx context
 	return listenPortConfigByPort, nil
 }
 
-func (t *defaultModelBuildTask) computeIngressExplicitTLSCertARNs(_ context.Context, ing *networking.Ingress) []string {
+func (t *defaultModelBuildTask) computeIngressExplicitTLSCertARNs(_ context.Context, ing *ClassifiedIngress) []string {
+	if ing.IngClassConfig.IngClassParams != nil && len(ing.IngClassConfig.IngClassParams.Spec.CertificateArn) != 0 {
+		return ing.IngClassConfig.IngClassParams.Spec.CertificateArn
+	}
 	var rawTLSCertARNs []string
-	_ = t.annotationParser.ParseStringSliceAnnotation(annotations.IngressSuffixCertificateARN, &rawTLSCertARNs, ing.Annotations)
+	_ = t.annotationParser.ParseStringSliceAnnotation(annotations.IngressSuffixCertificateARN, &rawTLSCertARNs, ing.Ing.Annotations)
 	return rawTLSCertARNs
 }
 
@@ -172,16 +207,16 @@ func (t *defaultModelBuildTask) computeIngressInferredTLSCertARNs(ctx context.Co
 	return t.certDiscovery.Discover(ctx, hosts.List())
 }
 
-func (t *defaultModelBuildTask) computeIngressListenPorts(_ context.Context, ing *networking.Ingress, preferTLS bool) (map[int64]elbv2model.Protocol, error) {
+func (t *defaultModelBuildTask) computeIngressListenPorts(_ context.Context, ing *networking.Ingress, preferTLS bool) (map[int32]elbv2model.Protocol, error) {
 	rawListenPorts := ""
 	if exists := t.annotationParser.ParseStringAnnotation(annotations.IngressSuffixListenPorts, &rawListenPorts, ing.Annotations); !exists {
 		if preferTLS {
-			return map[int64]elbv2model.Protocol{443: elbv2model.ProtocolHTTPS}, nil
+			return map[int32]elbv2model.Protocol{443: elbv2model.ProtocolHTTPS}, nil
 		}
-		return map[int64]elbv2model.Protocol{80: elbv2model.ProtocolHTTP}, nil
+		return map[int32]elbv2model.Protocol{80: elbv2model.ProtocolHTTP}, nil
 	}
 
-	var entries []map[string]int64
+	var entries []map[string]int32
 	if err := json.Unmarshal([]byte(rawListenPorts), &entries); err != nil {
 		return nil, errors.Wrapf(err, "failed to parse listen-ports configuration: `%s`", rawListenPorts)
 	}
@@ -189,7 +224,7 @@ func (t *defaultModelBuildTask) computeIngressListenPorts(_ context.Context, ing
 		return nil, errors.Errorf("empty listen-ports configuration: `%s`", rawListenPorts)
 	}
 
-	portAndProtocols := make(map[int64]elbv2model.Protocol, len(entries))
+	portAndProtocols := make(map[int32]elbv2model.Protocol, len(entries))
 	for _, entry := range entries {
 		for protocol, port := range entry {
 			// Verify port value is valid for ALB: [1, 65535]
@@ -209,15 +244,24 @@ func (t *defaultModelBuildTask) computeIngressListenPorts(_ context.Context, ing
 	return portAndProtocols, nil
 }
 
-func (t *defaultModelBuildTask) computeIngressExplicitInboundCIDRs(_ context.Context, ing *networking.Ingress) ([]string, []string, error) {
+func (t *defaultModelBuildTask) computeIngressExplicitInboundCIDRs(_ context.Context, ing *ClassifiedIngress) ([]string, []string, error) {
 	var rawInboundCIDRs []string
-	_ = t.annotationParser.ParseStringSliceAnnotation(annotations.IngressSuffixInboundCIDRs, &rawInboundCIDRs, ing.Annotations)
+	fromIngressClassParams := false
+	if ing.IngClassConfig.IngClassParams != nil && len(ing.IngClassConfig.IngClassParams.Spec.InboundCIDRs) != 0 {
+		rawInboundCIDRs = ing.IngClassConfig.IngClassParams.Spec.InboundCIDRs
+		fromIngressClassParams = true
+	} else {
+		_ = t.annotationParser.ParseStringSliceAnnotation(annotations.IngressSuffixInboundCIDRs, &rawInboundCIDRs, ing.Ing.Annotations)
+	}
 
 	var inboundCIDRv4s, inboundCIDRv6s []string
 	for _, cidr := range rawInboundCIDRs {
 		_, _, err := net.ParseCIDR(cidr)
 		if err != nil {
-			return nil, nil, errors.Wrapf(err, "invalid %v settings on Ingress: %v", annotations.IngressSuffixInboundCIDRs, k8s.NamespacedName(ing))
+			if fromIngressClassParams {
+				return nil, nil, fmt.Errorf("invalid CIDR in IngressClassParams InboundCIDR %s: %w", cidr, err)
+			}
+			return nil, nil, fmt.Errorf("invalid %v settings on Ingress: %v: %w", annotations.IngressSuffixInboundCIDRs, k8s.NamespacedName(ing.Ing), err)
 		}
 		if strings.Contains(cidr, ":") {
 			inboundCIDRv6s = append(inboundCIDRv6s, cidr)
@@ -228,10 +272,241 @@ func (t *defaultModelBuildTask) computeIngressExplicitInboundCIDRs(_ context.Con
 	return inboundCIDRv4s, inboundCIDRv6s, nil
 }
 
-func (t *defaultModelBuildTask) computeIngressExplicitSSLPolicy(_ context.Context, ing *networking.Ingress) *string {
+func (t *defaultModelBuildTask) computeIngressExplicitSSLPolicy(_ context.Context, ing *ClassifiedIngress) *string {
 	var rawSSLPolicy string
-	if exists := t.annotationParser.ParseStringAnnotation(annotations.IngressSuffixSSLPolicy, &rawSSLPolicy, ing.Annotations); !exists {
+	if ing.IngClassConfig.IngClassParams != nil && ing.IngClassConfig.IngClassParams.Spec.SSLPolicy != "" {
+		return &ing.IngClassConfig.IngClassParams.Spec.SSLPolicy
+	}
+	if exists := t.annotationParser.ParseStringAnnotation(annotations.IngressSuffixSSLPolicy, &rawSSLPolicy, ing.Ing.Annotations); !exists {
 		return nil
 	}
 	return &rawSSLPolicy
+}
+
+func (t *defaultModelBuildTask) computeIngressExplicitPrefixListIDs(_ context.Context, ing *ClassifiedIngress) []string {
+	if ing.IngClassConfig.IngClassParams != nil {
+		if len(ing.IngClassConfig.IngClassParams.Spec.PrefixListsIDs) != 0 {
+			return ing.IngClassConfig.IngClassParams.Spec.PrefixListsIDs
+		} else if len(ing.IngClassConfig.IngClassParams.Spec.PrefixListsIDsLegacy) != 0 {
+			return ing.IngClassConfig.IngClassParams.Spec.PrefixListsIDsLegacy
+		}
+	}
+	var prefixListIDs []string
+	t.annotationParser.ParseStringSliceAnnotation(annotations.IngressSuffixSecurityGroupPrefixLists, &prefixListIDs, ing.Ing.Annotations)
+
+	return prefixListIDs
+}
+
+type MutualAuthenticationConfig struct {
+	Port                          int32   `json:"port"`
+	Mode                          string  `json:"mode"`
+	TrustStore                    *string `json:"trustStore,omitempty"`
+	IgnoreClientCertificateExpiry *bool   `json:"ignoreClientCertificateExpiry,omitempty"`
+	AdvertiseTrustStoreCaNames    *string `json:"advertiseTrustStoreCaNames,omitempty"`
+}
+
+func (t *defaultModelBuildTask) computeIngressMutualAuthentication(ctx context.Context, ing *ClassifiedIngress) (map[int32]*elbv2model.MutualAuthenticationAttributes, error) {
+	var rawMtlsConfigString string
+	if exists := t.annotationParser.ParseStringAnnotation(annotations.IngressSuffixMutualAuthentication, &rawMtlsConfigString, ing.Ing.Annotations); !exists {
+		return nil, nil
+	}
+
+	var ingressAnnotationEntries []MutualAuthenticationConfig
+
+	if err := json.Unmarshal([]byte(rawMtlsConfigString), &ingressAnnotationEntries); err != nil {
+		return nil, errors.Wrapf(err, "failed to parse mutualAuthentication configuration from ingress annotation: `%s`", rawMtlsConfigString)
+	}
+	if len(ingressAnnotationEntries) == 0 {
+		return nil, errors.Errorf("empty mutualAuthentication configuration from ingress annotation: `%s`", rawMtlsConfigString)
+	}
+	portAndMtlsAttributesMap, err := t.parseMtlsConfigEntries(ctx, ingressAnnotationEntries)
+	if err != nil {
+		return nil, err
+	}
+
+	parsedPortAndMtlsAttributes, err := t.parseMtlsAttributesForTrustStoreNames(ctx, portAndMtlsAttributesMap)
+	if err != nil {
+		return nil, err
+	}
+	return parsedPortAndMtlsAttributes, nil
+}
+
+func (t *defaultModelBuildTask) parseMtlsConfigEntries(_ context.Context, entries []MutualAuthenticationConfig) (map[int32]*elbv2model.MutualAuthenticationAttributes, error) {
+	portAndMtlsAttributes := make(map[int32]*elbv2model.MutualAuthenticationAttributes, len(entries))
+
+	for _, mutualAuthenticationConfig := range entries {
+		port := mutualAuthenticationConfig.Port
+		mode := mutualAuthenticationConfig.Mode
+		truststoreNameOrArn := awssdk.ToString(mutualAuthenticationConfig.TrustStore)
+		ignoreClientCert := mutualAuthenticationConfig.IgnoreClientCertificateExpiry
+		advertiseTrustStoreCaNames := mutualAuthenticationConfig.AdvertiseTrustStoreCaNames
+
+		err := t.validateMutualAuthenticationConfig(port, mode, truststoreNameOrArn, ignoreClientCert, advertiseTrustStoreCaNames)
+		if err != nil {
+			return nil, err
+		}
+
+		if mode == string(elbv2model.MutualAuthenticationVerifyMode) && ignoreClientCert == nil {
+			ignoreClientCert = awssdk.Bool(false)
+		}
+		portAndMtlsAttributes[port] = &elbv2model.MutualAuthenticationAttributes{Mode: mode, TrustStoreArn: awssdk.String(truststoreNameOrArn), IgnoreClientCertificateExpiry: ignoreClientCert, AdvertiseTrustStoreCaNames: advertiseTrustStoreCaNames}
+	}
+	return portAndMtlsAttributes, nil
+}
+
+func (t *defaultModelBuildTask) validateMutualAuthenticationConfig(port int32, mode string, truststoreNameOrArn string, ignoreClientCert *bool, advertiseTrustStoreCaNames *string) error {
+	// Verify port value is valid for ALB: [1, 65535]
+	if port < 1 || port > 65535 {
+		return errors.Errorf("listen port must be within [1, 65535]: %v", port)
+	}
+	//Verify if the mutualAuthentication mode is not empty for a port
+	if mode == "" {
+		return errors.Errorf("mutualAuthentication mode cannot be empty for port %v", port)
+	}
+	//Verify if the mutualAuthentication mode is valid
+	validMutualAuthenticationModes := []string{string(elbv2model.MutualAuthenticationOffMode), string(elbv2model.MutualAuthenticationPassthroughMode), string(elbv2model.MutualAuthenticationVerifyMode)}
+	if !slices.Contains(validMutualAuthenticationModes, mode) {
+		return errors.Errorf("mutualAuthentication mode value must be among [%v, %v, %v] for port %v : %s", elbv2model.MutualAuthenticationOffMode, elbv2model.MutualAuthenticationPassthroughMode, elbv2model.MutualAuthenticationVerifyMode, port, mode)
+	}
+	//Verify if the mutualAuthentication truststoreNameOrArn is not empty for Verify mode
+	if mode == string(elbv2model.MutualAuthenticationVerifyMode) && truststoreNameOrArn == "" {
+		return errors.Errorf("trustStore is required when mutualAuthentication mode is verify for port %v", port)
+	}
+	//Verify if the mutualAuthentication truststoreNameOrArn is empty for Off and Passthrough modes
+	if (mode == string(elbv2model.MutualAuthenticationOffMode) || mode == string(elbv2model.MutualAuthenticationPassthroughMode)) && truststoreNameOrArn != "" {
+		return errors.Errorf("Mutual Authentication mode %s does not support trustStore for port %v", mode, port)
+	}
+	//Verify if the mutualAuthentication ignoreClientCert is valid for Off and Passthrough modes
+	if (mode == string(elbv2model.MutualAuthenticationOffMode) || mode == string(elbv2model.MutualAuthenticationPassthroughMode)) && ignoreClientCert != nil {
+		return errors.Errorf("Mutual Authentication mode %s does not support ignoring client certificate expiry for port %v", mode, port)
+	}
+
+	// Verify advertise trust ca names.
+	// The value (if specified) must be "on" or "off"
+	// The value can be only specified when using verify mode on the listener.
+	if advertiseTrustStoreCaNames != nil {
+		if mode != string(elbv2model.MutualAuthenticationVerifyMode) {
+			return errors.Errorf("Mutual Authentication mode %s does not support advertiseTrustStoreCaNames for port %v", mode, port)
+		}
+
+		if *advertiseTrustStoreCaNames != string(elbv2types.AdvertiseTrustStoreCaNamesEnumOff) && *advertiseTrustStoreCaNames != string(elbv2types.AdvertiseTrustStoreCaNamesEnumOn) {
+			return errors.Errorf("advertiseTrustStoreCaNames only supports the values \"on\" and \"off\" got value %s for port %v", *advertiseTrustStoreCaNames, port)
+		}
+	}
+
+	return nil
+}
+
+func (t *defaultModelBuildTask) parseMtlsAttributesForTrustStoreNames(ctx context.Context, portAndMtlsAttributes map[int32]*elbv2model.MutualAuthenticationAttributes) (map[int32]*elbv2model.MutualAuthenticationAttributes, error) {
+	var trustStoreNames []string
+	trustStoreNameAndPortMap := make(map[string][]int32)
+
+	for port, attributes := range portAndMtlsAttributes {
+		mode := attributes.Mode
+		truststoreNameOrArn := awssdk.ToString(attributes.TrustStoreArn)
+		if mode == string(elbv2model.MutualAuthenticationVerifyMode) && !strings.HasPrefix(truststoreNameOrArn, "arn:") {
+			trustStoreNameAndPortMap[truststoreNameOrArn] = append(trustStoreNameAndPortMap[truststoreNameOrArn], port)
+		}
+	}
+
+	if len(trustStoreNameAndPortMap) != 0 {
+		for names := range trustStoreNameAndPortMap {
+			trustStoreNames = append(trustStoreNames, names)
+		}
+		tsNameAndArnMap, err := shared_utils.GetTrustStoreArnFromName(ctx, t.elbv2Client, trustStoreNames)
+		if err != nil {
+			return nil, err
+		}
+		for name, ports := range trustStoreNameAndPortMap {
+			for _, port := range ports {
+				attributes := portAndMtlsAttributes[port]
+				if awssdk.ToString(attributes.TrustStoreArn) != "" {
+					attributes.TrustStoreArn = tsNameAndArnMap[name]
+				}
+				portAndMtlsAttributes[port] = attributes
+			}
+		}
+	}
+	return portAndMtlsAttributes, nil
+}
+
+func (t *defaultModelBuildTask) buildIngressGroupListenerAttributes(ctx context.Context, ingList []ClassifiedIngress, listenerProtocol elbv2model.Protocol, port int32) ([]elbv2model.ListenerAttribute, error) {
+	rawIngGrouplistenerAttributes := make(map[string]string)
+	ingClassAttributes := make(map[string]string)
+	if len(ingList) > 0 {
+		var err error
+		ingClassAttributes, err = t.buildIngressClassListenerAttributes(ingList[0].IngClassConfig, listenerProtocol, port)
+		if err != nil {
+			return nil, err
+		}
+	}
+	for _, ing := range ingList {
+		ingAttributes, err := t.buildIngressListenerAttributes(ctx, ing.Ing.Annotations, port, listenerProtocol)
+		if err != nil {
+			return nil, err
+		}
+		for _, attribute := range ingAttributes {
+			attributeKey := attribute.Key
+			attributeValue := attribute.Value
+			if existingAttributeValue, exists := rawIngGrouplistenerAttributes[attributeKey]; exists && existingAttributeValue != attributeValue {
+				if ingClassValue, exists := ingClassAttributes[attributeKey]; exists {
+					// Conflict is resolved by ingClassAttributes, show a warning
+					t.logger.Info("listener attribute conflict resolved by ingress class",
+						"attributeKey", attributeKey,
+						"existingValue", existingAttributeValue,
+						"newValue", attributeValue,
+						"ingClassValue", ingClassValue)
+				} else {
+					// Conflict is not resolved by ingClassAttributes, return an error
+					return nil, errors.Errorf("conflicting listener attributes %v: %v | %v for ingress %s/%s",
+						attributeKey, existingAttributeValue, attributeValue, ing.Ing.Namespace, ing.Ing.Name)
+				}
+			}
+			rawIngGrouplistenerAttributes[attributeKey] = attributeValue
+		}
+	}
+	rawIngGrouplistenerAttributes = algorithm.MergeStringMap(ingClassAttributes, rawIngGrouplistenerAttributes)
+	attributes := make([]elbv2model.ListenerAttribute, 0, len(rawIngGrouplistenerAttributes))
+	for attrKey, attrValue := range rawIngGrouplistenerAttributes {
+		attributes = append(attributes, elbv2model.ListenerAttribute{
+			Key:   attrKey,
+			Value: attrValue,
+		})
+	}
+	return attributes, nil
+}
+
+// buildIngressClassLoadBalancerAttributes builds the LB attributes for an IngressClass.
+func (t *defaultModelBuildTask) buildIngressClassListenerAttributes(ingClassConfig ClassConfiguration, listenerProtocol elbv2model.Protocol, port int32) (map[string]string, error) {
+	if ingClassConfig.IngClassParams == nil || len(ingClassConfig.IngClassParams.Spec.Listeners) == 0 {
+		return nil, nil
+	}
+	listeners := ingClassConfig.IngClassParams.Spec.Listeners
+	ingressClassListenerAttributes := make(map[string]string)
+	for _, listenerConfig := range listeners {
+		if string(listenerConfig.Protocol) == string(listenerProtocol) && listenerConfig.Port == port {
+			for _, attr := range listenerConfig.ListenerAttributes {
+				ingressClassListenerAttributes[attr.Key] = attr.Value
+			}
+			return ingressClassListenerAttributes, nil
+		}
+	}
+	return nil, nil
+}
+
+// Build attributes for listener
+func (t *defaultModelBuildTask) buildIngressListenerAttributes(ctx context.Context, ingressAnnotations map[string]string, port int32, listenerProtocol elbv2model.Protocol) ([]elbv2model.ListenerAttribute, error) {
+	var rawAttributes map[string]string
+	annotationKey := fmt.Sprintf("%v.%v-%v", annotations.IngressSuffixlsAttsAnnotationPrefix, listenerProtocol, port)
+	if _, err := t.annotationParser.ParseStringMapAnnotation(annotationKey, &rawAttributes, ingressAnnotations); err != nil {
+		return nil, err
+	}
+	attributes := make([]elbv2model.ListenerAttribute, 0, len(rawAttributes))
+	for attrKey, attrValue := range rawAttributes {
+		attributes = append(attributes, elbv2model.ListenerAttribute{
+			Key:   attrKey,
+			Value: attrValue,
+		})
+	}
+	return attributes, nil
 }

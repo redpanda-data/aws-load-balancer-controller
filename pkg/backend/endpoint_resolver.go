@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	awssdk "github.com/aws/aws-sdk-go/aws"
+	awssdk "github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
@@ -147,10 +147,10 @@ func (r *defaultEndpointResolver) resolvePodEndpointsWithEndpointsData(ctx conte
 
 	for _, epsData := range endpointsDataList {
 		for _, port := range epsData.Ports {
-			if len(svcPort.Name) != 0 && svcPort.Name != awssdk.StringValue(port.Name) {
+			if len(svcPort.Name) != 0 && svcPort.Name != awssdk.ToString(port.Name) {
 				continue
 			}
-			epPort := awssdk.Int32Value(port.Port)
+			epPort := awssdk.ToInt32(port.Port)
 			for _, ep := range epsData.Endpoints {
 				if ep.TargetRef == nil || ep.TargetRef.Kind != "Pod" {
 					continue
@@ -160,17 +160,24 @@ func (r *defaultEndpointResolver) resolvePodEndpointsWithEndpointsData(ctx conte
 				}
 				epAddr := ep.Addresses[0]
 
-				podKey := types.NamespacedName{Namespace: svcKey.Namespace, Name: ep.TargetRef.Name}
+				podNamespace := svcKey.Namespace
+				if ep.TargetRef.Namespace != "" {
+					podNamespace = ep.TargetRef.Namespace
+				}
+				podKey := types.NamespacedName{Namespace: podNamespace, Name: ep.TargetRef.Name}
 				pod, exists, err := r.podInfoRepo.Get(ctx, podKey)
 				if err != nil {
 					return nil, false, err
 				}
 				if !exists {
-					r.logger.Info("ignore pod Endpoint with non-existent podInfo", "podKey", podKey.String())
+					r.logger.Info("the pod in endpoint is not found in pod cache yet, will keep retrying", "podKey", podKey.String())
+					containsPotentialReadyEndpoints = true
 					continue
 				}
+
 				podEndpoint := buildPodEndpoint(pod, epAddr, epPort)
-				if ep.Conditions.Ready != nil && *ep.Conditions.Ready {
+				// Recommendation from Kubernetes is to consider unknown ready status as ready (ready == nil)
+				if ep.Conditions.Ready == nil || *ep.Conditions.Ready {
 					readyPodEndpoints = append(readyPodEndpoints, podEndpoint)
 					continue
 				}
@@ -282,16 +289,17 @@ func buildEndpointsDataFromEndpointSliceList(epsList *discovery.EndpointSliceLis
 
 func buildPodEndpoint(pod k8s.PodInfo, epAddr string, port int32) PodEndpoint {
 	return PodEndpoint{
-		IP:   epAddr,
-		Port: int64(port),
-		Pod:  pod,
+		IP:           epAddr,
+		Port:         port,
+		Pod:          pod,
+		QuicServerID: pod.GetQUICServerID(port),
 	}
 }
 
 func buildNodePortEndpoint(node *corev1.Node, instanceID string, nodePort int32) NodePortEndpoint {
 	return NodePortEndpoint{
 		InstanceID: instanceID,
-		Port:       int64(nodePort),
+		Port:       nodePort,
 		Node:       node,
 	}
 }

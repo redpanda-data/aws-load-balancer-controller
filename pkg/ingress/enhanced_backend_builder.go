@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	awssdk "github.com/aws/aws-sdk-go/aws"
+	awssdk "github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
 	networking "k8s.io/api/networking/v1"
@@ -24,19 +24,17 @@ const (
 	nonExistentBackendServiceMessageBody = "Backend service does not exist"
 	// the message body of fixed 503 response used when referencing a non-existent annotation Action as backend.
 	nonExistentBackendActionMessageBody = "Backend action does not exist"
-	// by default, we tolerate a missing backend service, and use a fixed 503 response instead.
-	defaultTolerateNonExistentBackendService = true
-	// by default, we tolerate a missing backend action, and use a fixed 503 response instead.
-	defaultTolerateNonExistentBackendAction = true
 )
 
 // EnhancedBackend is an enhanced version of Ingress backend.
 // It contains additional routing conditions and authentication configurations we parsed from annotations.
 // Also, when magic string `use-annotation` is specified as backend, the actions will be parsed from annotations as well.
 type EnhancedBackend struct {
-	Conditions []RuleCondition
-	Action     Action
-	AuthConfig AuthConfig
+	Conditions          []RuleCondition
+	Transforms          []Transform
+	Action              Action
+	AuthConfig          AuthConfig
+	JwtValidationConfig *JwtValidationConfig
 }
 
 type EnhancedBackendBuildOptions struct {
@@ -80,14 +78,13 @@ type EnhancedBackendBuilder interface {
 }
 
 // NewDefaultEnhancedBackendBuilder constructs new defaultEnhancedBackendBuilder.
-func NewDefaultEnhancedBackendBuilder(k8sClient client.Client, annotationParser annotations.Parser, authConfigBuilder AuthConfigBuilder) *defaultEnhancedBackendBuilder {
+func NewDefaultEnhancedBackendBuilder(k8sClient client.Client, annotationParser annotations.Parser, authConfigBuilder AuthConfigBuilder, tolerateNonExistentBackendService bool, tolerateNonExistentBackendAction bool) *defaultEnhancedBackendBuilder {
 	return &defaultEnhancedBackendBuilder{
-		k8sClient:         k8sClient,
-		annotationParser:  annotationParser,
-		authConfigBuilder: authConfigBuilder,
-
-		tolerateNonExistentBackendService: defaultTolerateNonExistentBackendAction,
-		tolerateNonExistentBackendAction:  defaultTolerateNonExistentBackendService,
+		k8sClient:                         k8sClient,
+		annotationParser:                  annotationParser,
+		authConfigBuilder:                 authConfigBuilder,
+		tolerateNonExistentBackendService: tolerateNonExistentBackendService,
+		tolerateNonExistentBackendAction:  tolerateNonExistentBackendAction,
 	}
 }
 
@@ -124,6 +121,11 @@ func (b *defaultEnhancedBackendBuilder) Build(ctx context.Context, ing *networki
 		return EnhancedBackend{}, err
 	}
 
+	transforms, err := b.buildTransforms(ctx, ing.Annotations, backend.Service.Name)
+	if err != nil {
+		return EnhancedBackend{}, err
+	}
+
 	var action Action
 	if backend.Service.Port.Name == magicServicePortUseAnnotation {
 		action, err = b.buildActionViaAnnotation(ctx, ing.Annotations, backend.Service.Name)
@@ -150,10 +152,18 @@ func (b *defaultEnhancedBackendBuilder) Build(ctx context.Context, ing *networki
 		}
 	}
 
+	var jwtValidationConfig *JwtValidationConfig
+	jwtValidationConfig, err = b.buildJwtValidationConfig(ctx, ing.Annotations)
+	if err != nil {
+		return EnhancedBackend{}, err
+	}
+
 	return EnhancedBackend{
-		Conditions: conditions,
-		Action:     action,
-		AuthConfig: authCfg,
+		Conditions:          conditions,
+		Transforms:          transforms,
+		Action:              action,
+		AuthConfig:          authCfg,
+		JwtValidationConfig: jwtValidationConfig,
 	}, nil
 }
 
@@ -165,11 +175,26 @@ func (b *defaultEnhancedBackendBuilder) buildConditions(_ context.Context, ingAn
 		return nil, err
 	}
 	for _, condition := range conditions {
-		if err := condition.validate(); err != nil {
+		if err := condition.Validate(); err != nil {
 			return nil, err
 		}
 	}
 	return conditions, nil
+}
+
+func (b *defaultEnhancedBackendBuilder) buildTransforms(_ context.Context, ingAnnotation map[string]string, svcName string) ([]Transform, error) {
+	var transforms []Transform
+	annotationKey := fmt.Sprintf("transforms.%v", svcName)
+	_, err := b.annotationParser.ParseJSONAnnotation(annotationKey, &transforms, ingAnnotation)
+	if err != nil {
+		return nil, err
+	}
+	for _, transform := range transforms {
+		if err := transform.Validate(); err != nil {
+			return nil, err
+		}
+	}
+	return transforms, nil
 }
 
 // buildActionViaAnnotation will build the backend action specified via actions annotation.
@@ -213,13 +238,14 @@ func (b *defaultEnhancedBackendBuilder) buildActionViaServiceAndServicePort(_ co
 // normalizeSimplifiedSchemaForwardAction will normalize to the advanced schema for forward action to share common processing logic.
 // we support a simplified schema in action annotation when configure forward to a single TargetGroup.
 func (b *defaultEnhancedBackendBuilder) normalizeSimplifiedSchemaForwardAction(_ context.Context, action *Action) {
-	if action.Type == ActionTypeForward && action.TargetGroupARN != nil {
+	if action.Type == ActionTypeForward && (action.TargetGroupARN != nil || action.TargetGroupName != nil) {
 		*action = Action{
 			Type: ActionTypeForward,
 			ForwardConfig: &ForwardActionConfig{
 				TargetGroups: []TargetGroupTuple{
 					{
-						TargetGroupARN: action.TargetGroupARN,
+						TargetGroupARN:  action.TargetGroupARN,
+						TargetGroupName: action.TargetGroupName,
 					},
 				},
 			},
@@ -248,7 +274,7 @@ func (b *defaultEnhancedBackendBuilder) loadBackendServices(ctx context.Context,
 		svcNames := sets.NewString()
 		for _, tgt := range action.ForwardConfig.TargetGroups {
 			if tgt.ServiceName != nil {
-				svcNames.Insert(awssdk.StringValue(tgt.ServiceName))
+				svcNames.Insert(awssdk.ToString(tgt.ServiceName))
 			}
 		}
 		forwardToSingleSvc := (len(action.ForwardConfig.TargetGroups) == 1) && (svcNames.Len() == 1)
@@ -280,13 +306,48 @@ func (b *defaultEnhancedBackendBuilder) buildAuthConfig(ctx context.Context, act
 		action.ForwardConfig != nil &&
 		len(action.ForwardConfig.TargetGroups) == 1 &&
 		action.ForwardConfig.TargetGroups[0].ServiceName != nil {
-		svcName := awssdk.StringValue(action.ForwardConfig.TargetGroups[0].ServiceName)
+		svcName := awssdk.ToString(action.ForwardConfig.TargetGroups[0].ServiceName)
 		svcKey := types.NamespacedName{Namespace: namespace, Name: svcName}
 		svc := backendServices[svcKey]
 		svcAndIngAnnotations = algorithm.MergeStringMap(svc.Annotations, svcAndIngAnnotations)
 	}
 
 	return b.authConfigBuilder.Build(ctx, svcAndIngAnnotations)
+}
+
+// Parse annotations to construct JWT validation config model
+func (b *defaultEnhancedBackendBuilder) buildJwtValidationConfig(_ context.Context, ingAnnotation map[string]string) (*JwtValidationConfig, error) {
+	jwtValidationConfig := JwtValidationConfig{}
+	exists, err := b.annotationParser.ParseJSONAnnotation(annotations.IngressSuffixJwtValidation, &jwtValidationConfig, ingAnnotation)
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, nil
+	}
+
+	// Ensure required fields are present
+	if jwtValidationConfig.JwksEndpoint == "" {
+		return nil, errors.Errorf("jwksEndpoint is a required field for jwt validation")
+	}
+	if jwtValidationConfig.Issuer == "" {
+		return nil, errors.Errorf("issuer is a required field for jwt validation")
+	}
+
+	// If additional claims are present, ensure each additional claim's required fields are present as well
+	for _, additionalClaim := range jwtValidationConfig.AdditionalClaims {
+		if additionalClaim.Format == "" {
+			return nil, errors.Errorf("format is a required field for additional claims for jwt validation")
+		}
+		if additionalClaim.Name == "" {
+			return nil, errors.Errorf("name is a required field for additional claims for jwt validation")
+		}
+		if len(additionalClaim.Values) == 0 {
+			return nil, errors.Errorf("values must not be empty for additional claims for jwt validation")
+		}
+	}
+
+	return &jwtValidationConfig, nil
 }
 
 // build503ResponseAction generates a 503 fixed response action when forward to a single non-existent Kubernetes Service.
