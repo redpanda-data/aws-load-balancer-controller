@@ -3,7 +3,6 @@ package gateway
 import (
 	"context"
 	"fmt"
-	gwv1 "sigs.k8s.io/gateway-api/apis/v1"
 	"strconv"
 	"strings"
 	"time"
@@ -71,7 +70,7 @@ var _ = Describe("test nlb gateway using instance targets reconciled by the aws 
 			auxiliaryStack = newAuxiliaryResourceStack(ctx, tf, tgSpec, false)
 
 			By("deploying stack", func() {
-				err := stack.Deploy(ctx, tf, auxiliaryStack, lbcSpec, tgSpec, hasTLS, gwv1.TLSModeTerminate, false)
+				err := stack.Deploy(ctx, tf, auxiliaryStack, lbcSpec, tgSpec, false)
 				Expect(err).NotTo(HaveOccurred())
 
 				err = auxiliaryStack.Deploy(ctx, tf)
@@ -338,7 +337,7 @@ var _ = Describe("test nlb gateway using instance targets reconciled by the aws 
 			auxiliaryStack = newAuxiliaryResourceStack(ctx, tf, tgSpec, false)
 
 			By("deploying stack", func() {
-				err := stack.Deploy(ctx, tf, auxiliaryStack, lbcSpec, tgSpec, hasTLS, gwv1.TLSModeTerminate, false)
+				err := stack.Deploy(ctx, tf, auxiliaryStack, lbcSpec, tgSpec, false)
 				Expect(err).NotTo(HaveOccurred())
 
 				err = auxiliaryStack.Deploy(ctx, tf)

@@ -22,7 +22,7 @@ type NLBTestStack struct {
 	nlbResourceStack *nlbResourceStack
 }
 
-func (s *NLBTestStack) Deploy(ctx context.Context, f *framework.Framework, auxiliaryStack *auxiliaryResourceStack, lbConfSpec elbv2gw.LoadBalancerConfigurationSpec, tgConfSpec elbv2gw.TargetGroupConfigurationSpec, hasTLS bool, tlsMode gwv1.TLSModeType, readinessGateEnabled bool) error {
+func (s *NLBTestStack) Deploy(ctx context.Context, f *framework.Framework, auxiliaryStack *auxiliaryResourceStack, lbConfSpec elbv2gw.LoadBalancerConfigurationSpec, tgConfSpec elbv2gw.TargetGroupConfigurationSpec, readinessGateEnabled bool) error {
 	dpTCP := buildDeploymentSpec(f.Options.TestImageRegistry)
 	svcTCP := buildServiceSpec(map[string]string{})
 
@@ -48,20 +48,26 @@ func (s *NLBTestStack) Deploy(ctx context.Context, f *framework.Framework, auxil
 		},
 	}
 
-	if hasTLS {
-		listeners = append(listeners, gwv1.Listener{
-			Name:     "port443",
-			Port:     443,
-			Protocol: gwv1.TLSProtocolType,
-			TLS: &gwv1.GatewayTLSConfig{
-				Mode: &tlsMode,
-				CertificateRefs: []gwv1.SecretObjectReference{
-					{
-						Name: "tls-cert",
+	if lbConfSpec.ListenerConfigurations != nil {
+		for _, lsr := range *lbConfSpec.ListenerConfigurations {
+			if lsr.ProtocolPort == "TLS:443" {
+				tlsMode := gwv1.TLSModeTerminate
+				listeners = append(listeners, gwv1.Listener{
+					Name:     "port443",
+					Port:     443,
+					Protocol: gwv1.TLSProtocolType,
+					TLS: &gwv1.GatewayTLSConfig{
+						Mode: &tlsMode,
+						CertificateRefs: []gwv1.SecretObjectReference{
+							{
+								Name: "tls-cert",
+							},
+						},
 					},
-				},
-			},
-		})
+				})
+				break
+			}
+		}
 	}
 
 	tcprs := []*gwalpha2.TCPRoute{buildTCPRoute([]gwv1.ParentReference{}, []gwv1.BackendRef{})}
@@ -368,7 +374,7 @@ func (s *NLBTestStack) CreateFENLBReferenceGrant(ctx context.Context, f *framewo
 		},
 	}
 
-	if err := CreateReferenceGrants(ctx, f, []*gwbeta1.ReferenceGrant{refGrant}); err != nil {
+	if err := createReferenceGrants(ctx, f, []*gwbeta1.ReferenceGrant{refGrant}); err != nil {
 		return nil, err
 	}
 

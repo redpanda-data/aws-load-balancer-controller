@@ -1,6 +1,6 @@
 module sigs.k8s.io/aws-load-balancer-controller
 
-go 1.25.6
+go 1.24.11
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.40.0
@@ -149,7 +149,6 @@ require (
 	github.com/sirupsen/logrus v1.9.3 // indirect
 	github.com/spf13/cast v1.7.0 // indirect
 	github.com/spf13/cobra v1.9.1 // indirect
-	github.com/stretchr/objx v0.5.2 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasthttp v1.34.0 // indirect
 	github.com/x448/float16 v0.8.4 // indirect

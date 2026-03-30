@@ -396,15 +396,15 @@ func Test_kindCheck(t *testing.T) {
 			name:  "tls listener, tls route, terminate by default",
 			route: &tlsRouteDescription{},
 			listener: gwv1.Listener{
-				Protocol: gwv1.TLSProtocolType,
+				Protocol: gwv1.TCPProtocolType,
 			},
-			expectedResult: true,
+			expectedResult: false,
 		},
 		{
 			name:  "tls listener, tcp route, terminate specified",
 			route: &tcpRouteDescription{},
 			listener: gwv1.Listener{
-				Protocol: gwv1.TLSProtocolType,
+				Protocol: gwv1.TCPProtocolType,
 				TLS: &gwv1.GatewayTLSConfig{
 					Mode: &term,
 				},
@@ -420,7 +420,7 @@ func Test_kindCheck(t *testing.T) {
 					Mode: &pt,
 				},
 			},
-			expectedResult: true,
+			expectedResult: false,
 		},
 		{
 			name:  "tls listener, tls route, passthrough specified",
