@@ -48,8 +48,6 @@ import (
 	"github.com/spf13/pflag"
 	zapraw "go.uber.org/zap"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
-	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-
 	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
@@ -76,12 +74,10 @@ import (
 	corewebhook "sigs.k8s.io/aws-load-balancer-controller/webhooks/core"
 	elbv2webhook "sigs.k8s.io/aws-load-balancer-controller/webhooks/elbv2"
 	networkingwebhook "sigs.k8s.io/aws-load-balancer-controller/webhooks/networking"
-
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
-	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -91,8 +87,7 @@ var (
 )
 
 func init() {
-	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
-	utilruntime.Must(elbv2api.AddToScheme(scheme))
+	_ = clientgoscheme.AddToScheme(scheme)
 
 	_ = agaapi.AddToScheme(scheme)
 	_ = elbv2api.AddToScheme(scheme)

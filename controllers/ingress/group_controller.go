@@ -33,7 +33,6 @@ import (
 	networkingpkg "sigs.k8s.io/aws-load-balancer-controller/pkg/networking"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -95,8 +94,6 @@ func NewGroupReconciler(cloud services.Cloud, k8sClient client.Client, eventReco
 		reconcileCounters:     reconcileCounters,
 
 		maxConcurrentReconciles: controllerConfig.IngressConfig.MaxConcurrentReconciles,
-
-		cache: cache,
 	}
 }
 
@@ -119,8 +116,6 @@ type groupReconciler struct {
 	reconcileCounters     *metricsutil.ReconcileCounters
 
 	maxConcurrentReconciles int
-
-	cache cache.Cache
 }
 
 // +kubebuilder:rbac:groups=elbv2.k8s.aws,resources=ingressclassparams,verbs=get;list;watch

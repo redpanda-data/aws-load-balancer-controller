@@ -13,6 +13,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networking "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	elbv2api "sigs.k8s.io/aws-load-balancer-controller/apis/elbv2/v1beta1"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/equality"
@@ -644,8 +645,7 @@ func Test_defaultClassLoader_Load(t *testing.T) {
 			defer ctrl.Finish()
 
 			ctx := context.Background()
-			k8sClient := testclient.NewFakeClient()
-			k8sSchema := k8sClient.Scheme()
+			k8sSchema := runtime.NewScheme()
 			clientgoscheme.AddToScheme(k8sSchema)
 			elbv2api.AddToScheme(k8sSchema)
 			k8sClient := testclient.NewClientBuilder().WithScheme(k8sSchema).Build()
@@ -844,8 +844,7 @@ func Test_defaultClassLoader_validateIngressClassParamsNamespaceRestriction(t *t
 			defer ctrl.Finish()
 
 			ctx := context.Background()
-			k8sClient := testclient.NewFakeClient()
-			k8sSchema := k8sClient.Scheme()
+			k8sSchema := runtime.NewScheme()
 			clientgoscheme.AddToScheme(k8sSchema)
 			elbv2api.AddToScheme(k8sSchema)
 			k8sClient := testclient.NewClientBuilder().WithScheme(k8sSchema).Build()

@@ -22,6 +22,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networking "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
@@ -4754,8 +4755,7 @@ func Test_defaultModelBuilder_Build(t *testing.T) {
 			}
 
 			ctx := context.Background()
-			k8sClient := testclient.NewFakeClient()
-			k8sSchema := k8sClient.Scheme()
+			k8sSchema := runtime.NewScheme()
 			clientgoscheme.AddToScheme(k8sSchema)
 			k8sClient := testclient.NewClientBuilder().WithScheme(k8sSchema).Build()
 			for _, svc := range tt.env.svcs {

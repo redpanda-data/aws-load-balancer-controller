@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	networking "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	elbv2api "sigs.k8s.io/aws-load-balancer-controller/apis/elbv2/v1beta1"
 	testclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -186,8 +187,7 @@ func Test_defaultFinalizerManager_AddFinalizers(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := context.Background()
-			k8sClient := testclient.NewFakeClient()
-			k8sSchema := k8sClient.Scheme()
+			k8sSchema := runtime.NewScheme()
 			clientgoscheme.AddToScheme(k8sSchema)
 			elbv2api.AddToScheme(k8sSchema)
 			k8sClient := testclient.NewClientBuilder().
@@ -327,9 +327,7 @@ func Test_defaultFinalizerManager_RemoveFinalizers(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := context.Background()
-
-			k8sClient := testclient.NewFakeClient()
-			k8sSchema := k8sClient.Scheme()
+			k8sSchema := runtime.NewScheme()
 			clientgoscheme.AddToScheme(k8sSchema)
 			elbv2api.AddToScheme(k8sSchema)
 			k8sClient := testclient.NewClientBuilder().

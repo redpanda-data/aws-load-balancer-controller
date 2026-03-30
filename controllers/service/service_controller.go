@@ -30,7 +30,6 @@ import (
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/runtime"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/service"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 )
@@ -95,8 +94,6 @@ type serviceReconciler struct {
 	reconcileCounters *metricsutil.ReconcileCounters
 
 	maxConcurrentReconciles int
-
-	cache cache.Cache
 }
 
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;update;patch

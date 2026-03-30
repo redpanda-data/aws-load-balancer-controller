@@ -14,8 +14,6 @@ import (
 
 type GinkgoLogger interface {
 	httpexpectv2.LoggerReporter
-	GetLogr() logr.Logger
-	Info(msg string, keyvalue ...any)
 }
 
 var _ GinkgoLogger = &defaultGinkgoLogger{}
@@ -32,14 +30,6 @@ func (l *defaultGinkgoLogger) Logf(format string, args ...interface{}) {
 func (l *defaultGinkgoLogger) Errorf(format string, args ...interface{}) {
 	message := fmt.Sprintf(format, args...)
 	ginkgov2.Fail(message)
-}
-
-func (l *defaultGinkgoLogger) GetLogr() logr.Logger {
-	return l.Logger
-}
-
-func (l *defaultGinkgoLogger) Info(msg string, keyvalue ...any) {
-	l.Logger.Info(msg, keyvalue...)
 }
 
 // NewGinkgoLogger returns new logger with ginkgo backend.

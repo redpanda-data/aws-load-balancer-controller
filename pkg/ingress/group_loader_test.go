@@ -332,8 +332,7 @@ func Test_defaultGroupLoader_Load(t *testing.T) {
 					ingClassAParams, ingClassBParams, ingClassCParams,
 				},
 				ingList: []*networking.Ingress{
-					// ing1BeenDeletedWithFinalizer, ing2, ing3, ing4, ing5, ing6, ing7,
-					ing2, ing3, ing4, ing5, ing6, ing7,
+					ing1BeenDeletedWithFinalizer, ing2, ing3, ing4, ing5, ing6, ing7,
 				},
 			},
 			args: args{
@@ -360,7 +359,9 @@ func Test_defaultGroupLoader_Load(t *testing.T) {
 						IngClassConfig: ClassConfiguration{},
 					},
 				},
-				InactiveMembers: nil,
+				InactiveMembers: []*networking.Ingress{
+					ing1BeenDeletedWithFinalizer,
+				},
 			},
 		},
 		{
@@ -373,8 +374,7 @@ func Test_defaultGroupLoader_Load(t *testing.T) {
 					ingClassAParams, ingClassBParams, ingClassCParams,
 				},
 				ingList: []*networking.Ingress{
-					// ing1BeenDeletedWithoutFinalizer, ing2, ing3, ing4, ing5, ing6, ing7,
-					ing2, ing3, ing4, ing5, ing6, ing7,
+					ing1BeenDeletedWithoutFinalizer, ing2, ing3, ing4, ing5, ing6, ing7,
 				},
 			},
 			args: args{
@@ -517,7 +517,7 @@ func Test_defaultGroupLoader_Load(t *testing.T) {
 					ingClassAParams, ingClassBParams, ingClassCParams,
 				},
 				ingList: []*networking.Ingress{
-					ing1, ing2, ing3, ing4, ing5 /* ing6BeenDeletedWithoutFinalizer,*/, ing7,
+					ing1, ing2, ing3, ing4, ing5, ing6BeenDeletedWithoutFinalizer, ing7,
 				},
 			},
 			args: args{
@@ -539,7 +539,7 @@ func Test_defaultGroupLoader_Load(t *testing.T) {
 					ingClassAParams, ingClassBParams, ingClassCParams,
 				},
 				ingList: []*networking.Ingress{
-					ing1, ing2, ing3, ing4, ing5 /* ing6BeenDeletedWithFinalizer, */, ing7,
+					ing1, ing2, ing3, ing4, ing5, ing6BeenDeletedWithFinalizer, ing7,
 				},
 			},
 			args: args{
@@ -548,7 +548,7 @@ func Test_defaultGroupLoader_Load(t *testing.T) {
 			want: Group{
 				ID:              GroupID{Namespace: "ing-ns", Name: "ing-6"},
 				Members:         nil,
-				InactiveMembers: nil,
+				InactiveMembers: []*networking.Ingress{ing6BeenDeletedWithFinalizer},
 			},
 		},
 		{
@@ -603,8 +603,7 @@ func Test_defaultGroupLoader_Load(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			defer ctrl.Finish()
 
-			k8sClient := testclient.NewFakeClient()
-			k8sSchema := k8sClient.Scheme()
+			k8sSchema := runtime.NewScheme()
 			clientgoscheme.AddToScheme(k8sSchema)
 			elbv2api.AddToScheme(k8sSchema)
 			k8sClient := testclient.NewClientBuilder().WithScheme(k8sSchema).Build()
@@ -1755,8 +1754,7 @@ func Test_defaultGroupLoader_loadGroupIDIfAnyHelper(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			defer ctrl.Finish()
 
-			k8sClient := testclient.NewFakeClient()
-			k8sSchema := k8sClient.Scheme()
+			k8sSchema := runtime.NewScheme()
 			clientgoscheme.AddToScheme(k8sSchema)
 			elbv2api.AddToScheme(k8sSchema)
 			k8sClient := testclient.NewClientBuilder().WithScheme(k8sSchema).Build()
@@ -2176,8 +2174,7 @@ func Test_defaultGroupLoader_classifyIngress(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			defer ctrl.Finish()
 
-			k8sClient := testclient.NewFakeClient()
-			k8sSchema := k8sClient.Scheme()
+			k8sSchema := runtime.NewScheme()
 			clientgoscheme.AddToScheme(k8sSchema)
 			elbv2api.AddToScheme(k8sSchema)
 			k8sClient := testclient.NewClientBuilder().WithScheme(k8sSchema).Build()
